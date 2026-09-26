@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "agf.data-visualization",
+  "name": "Agent Activity",
+  "version": "0.1.0",
+  "author": "Angus Forbes",
+  "license": "MIT",
+  "description": "Dashboard of what your coding agents (Pi, Claude Code, Codex) worked on: time, tokens, themes, topics, terms, tools and app time, drawn in theme colours.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "Panel.qml" },
+  "barWidget": {
+    "displayName": "Agent Activity",
+    "description": "Agent activity dashboard: heat map, token Sankey, theme stream, topic map, terms, tools and app time.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

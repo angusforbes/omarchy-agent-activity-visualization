@@ -1,0 +1,100 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>omarchy-data-visualization — dev preview (real snapshot)</title>
+<!-- Open with: chromium --allow-file-access-from-files dev/index.html
+     Mirrors the QML panel layout; charts come from ../plugin/charts.js (the same code the panel runs). -->
+<style>
+  :root { --bg:#fff; --fg:#575279; --accent:#56949f; --muted:#9893a5; --desk:#ede7e1; --font:"JetBrainsMono Nerd Font", monospace; }
+  * { box-sizing: border-box; }
+  body { margin: 0; width: 1800px; height: 1125px; background: var(--desk); font-family: var(--font); color: var(--fg); position: relative; overflow: hidden; }
+  .panel { position: absolute; top: 34px; right: 8px; width: 1180px; background: var(--bg); border: 3px solid var(--accent); padding: 18px 22px 16px; }
+  .head { display: flex; align-items: center; gap: 16px; }
+  .head .icon { font-size: 34px; width: 40px; }
+  .head h1 { margin: 0; font-size: 22px; font-weight: 600; }
+  .head .sub { font-size: 12px; font-weight: 700; letter-spacing: 3px; margin-top: 3px; }
+  .head .sub em { font-style: normal; color: var(--muted); font-weight: 500; letter-spacing: 1.5px; }
+  .seg { margin-left: auto; display: flex; border: 1px solid color-mix(in srgb, var(--fg) 30%, transparent); }
+  .seg button { font: 600 12px var(--font); letter-spacing: 1.5px; color: var(--fg); background: transparent; border: 0; padding: 7px 14px; cursor: pointer; }
+  .seg button.on { background: var(--fg); color: var(--bg); }
+  .rule { height: 1px; background: color-mix(in srgb, var(--fg) 12%, transparent); margin: 14px 0; }
+  .kpis { display: grid; grid-template-columns: repeat(6, 1fr); }
+  .kpi { padding: 0 14px; border-left: 1px solid color-mix(in srgb, var(--fg) 10%, transparent); }
+  .kpi:first-child { border-left: 0; padding-left: 0; }
+  .kpi .l { font-size: 10.5px; font-weight: 700; letter-spacing: 1.8px; }
+  .kpi .v { font-size: 24px; margin: 3px 0 1px; }
+  .kpi .d { font-size: 11px; color: var(--muted); }
+  .row { display: grid; }
+  .tile { padding: 0 16px; border-left: 1px solid color-mix(in srgb, var(--fg) 10%, transparent); min-width: 0; }
+  .tile:first-child { border-left: 0; padding-left: 0; } .tile:last-child { padding-right: 0; }
+  .tile h2 { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase; }
+  .tile .cap { font-size: 11px; color: var(--muted); margin: 3px 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  canvas { display: block; width: 100%; }
+  .foot { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--muted); margin-top: 12px; }
+  #tip { position: absolute; pointer-events: none; background: var(--bg); border: 1px solid var(--accent); padding: 5px 8px; font-size: 11px; display: none; white-space: pre; z-index: 9; }
+</style>
+<script src="../plugin/charts.js"></script>
+</head>
+<body>
+<div class="panel">
+  <div class="head">
+    <div class="icon">󰄧</div>
+    <div><h1>Agent Activity</h1><div class="sub">WHAT THE AGENTS WORKED ON <em id="rangeLabel"></em></div></div>
+    <div class="seg" id="seg"><button data-r="24h">24H</button><button data-r="7d">7D</button><button data-r="1mo">1MO</button><button data-r="1y">1Y</button></div>
+  </div>
+  <div class="rule"></div><div class="kpis" id="kpis"></div><div class="rule"></div>
+  <div class="row" style="grid-template-columns:5fr 7fr">
+    <div class="tile"><h2>When</h2><div class="cap" id="heatCap"></div><canvas data-c="heat" height="220"></canvas></div>
+    <div class="tile"><h2>Where the tokens went</h2><div class="cap">tokens → agent → theme → work kind</div><canvas data-c="sankey" height="236"></canvas></div>
+  </div>
+  <div class="rule"></div>
+  <div class="row" style="grid-template-columns:7fr 5fr">
+    <div class="tile"><h2>Themes over time</h2><div class="cap">agent busy time per theme</div><canvas data-c="stream" height="220"></canvas></div>
+    <div class="tile"><h2>Topic map</h2><div class="cap">area = busy time · deeper fill = rising</div><canvas data-c="topics" height="222"></canvas></div>
+  </div>
+  <div class="rule"></div>
+  <div class="row" style="grid-template-columns:repeat(6, 1fr)">
+    <div class="tile"><h2>Terms</h2><div class="cap">in your prompts, vs previous period</div><canvas data-c="terms" height="200"></canvas></div>
+    <div class="tile"><h2>Work mix</h2><div class="cap">busy time by work kind · from tool calls</div><canvas data-c="mixChart" height="200"></canvas></div>
+    <div class="tile"><h2>Agents at once</h2><div class="cap">peak ─ · average while active ▒</div><canvas data-c="conc" height="200"></canvas></div>
+    <div class="tile"><h2>Tools</h2><div class="cap">calls, by work kind</div><canvas data-c="tools" height="200"></canvas></div>
+    <div class="tile"><h2>Subagents</h2><div class="cap">runs by type · outcome</div><canvas data-c="subTypes" height="200"></canvas></div>
+    <div class="tile"><h2>Subagent runs</h2><div class="cap">when × how long · by model</div><canvas data-c="subRuns" height="200"></canvas></div>
+  </div>
+  <div class="foot"><span id="footL"></span><span id="footR"></span></div>
+</div>
+<div id="tip"></div>
+<script>
+const P = { bg: "#ffffff", fg: "#575279", accent: "#56949f", you: "#b4637a", font: "JetBrainsMono Nerd Font",
+  themes: ["#56949f", "#907aa9", "#286983", "#ea9d34", "#d7827e", "#cf8057", "#b4637a", "#9893a5", "#67402b"],
+  kinds: { "Pi": "#575279", "Claude Code": "#cf8057", "Codex": "#286983", "Subagents": "#907aa9" } };
+const qs = new URLSearchParams(location.search);
+let R = qs.get("r") || "7d", SNAP = null;
+const tip = document.getElementById("tip");
+function render() {
+  document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.r === R));
+  const rr = SNAP.ranges[R];
+  document.getElementById("rangeLabel").textContent = "· " + rr.label.toUpperCase();
+  document.getElementById("heatCap").textContent = { "theme-hour": "theme × hour", "day-hour": "day × hour of day", "week-hour": "week × hour of day" }[rr.heat.mode] + " · agent time vs your time";
+  document.getElementById("kpis").innerHTML = kpiItems(SNAP, R).map(k => `<div class="kpi"><div class="l">${k.label}</div><div class="v">${k.value}</div><div class="d"><b style="color:${k.plain ? "inherit" : k.up ? P.accent : P.you}">${k.delta}</b>${k.delta && !k.plain && k.delta !== "new" ? " vs prev" : ""}</div></div>`).join("");
+  document.querySelectorAll("canvas[data-c]").forEach(cv => {
+    const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = +cv.getAttribute("height");
+    cv.style.height = h + "px"; cv.width = w * dpr; cv.height = h * dpr;
+    const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+    cv._hits = window[cv.dataset.c](ctx, w, h, SNAP, R, P) || [];
+    cv.onmousemove = e => { const r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+      const hit = cv._hits.find(t => x >= t.x && x <= t.x + t.w && y >= t.y && y <= t.y + t.h);
+      if (!hit) { tip.style.display = "none"; return; } tip.textContent = hit.text; tip.style.display = "block"; tip.style.left = e.clientX + 12 + "px"; tip.style.top = e.clientY + 12 + "px"; };
+    cv.onmouseleave = () => tip.style.display = "none";
+  });
+  const c = SNAP.counts, age = Math.round((Date.now() / 1000 - SNAP.generated) / 60);
+  document.getElementById("footL").textContent = `no AI · rule themes · work kind from tool calls`;
+  document.getElementById("footR").textContent = `Pi ${c.pi} · Claude Code ${c.claude} · Codex ${c.codex} sessions · updated ${age} min ago`;
+}
+document.querySelectorAll("#seg button").forEach(b => b.onclick = () => { R = b.dataset.r; render(); });
+fetch(qs.get("snap") || "snapshot.json")   // e.g. ?snap=file:///home/you/.local/share/omarchy-data-visualization/snapshot.json
+.then(r => r.json()).then(s => { SNAP = s; document.fonts.ready.then(render); });
+</script>
+</body>
+</html>
