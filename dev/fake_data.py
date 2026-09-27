@@ -12,7 +12,7 @@ Writes OUT_DIR/snapshot.json and OUT_DIR/frames-<range>.json (time-slider window
 import hashlib, json, os, random, sqlite3, sys, time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "collector"))
+sys.path.insert(0, os.path.join(HERE, "..", "bin"))
 import odv  # noqa: E402
 
 SEED = 7

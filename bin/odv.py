@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""odv — collector for omarchy-data-visualization (agent activity dashboard).
+"""odv — collector for the Agent Activity Omarchy plugin (agf.agent-activity).
 
     odv ingest            parse Pi / Claude Code / Codex logs + app-time samples into SQLite
     odv tag [--jev]       tag turns (rules; Jev when a TypeSafe key is configured)
@@ -7,7 +7,7 @@
     odv run               ingest + tag + build   (what the systemd timer runs)
     odv check             print sanity numbers
 
-Stdlib only. Data lives in ~/.local/share/omarchy-data-visualization/.
+Stdlib only. Data lives in ~/.local/share/omarchy-agent-activity/.
 """
 import argparse, glob, hashlib, json, math, os, re, sqlite3, sys, time, urllib.request, urllib.error
 from collections import Counter, defaultdict
@@ -15,7 +15,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 HOME = os.path.expanduser("~")
-DATA = os.path.join(HOME, ".local/share/omarchy-data-visualization")
+DATA = os.path.join(HOME, ".local/share/omarchy-agent-activity")
+_OLD_DATA = os.path.join(HOME, ".local/share/omarchy-data-visualization")   # pre-marketplace name
+if not os.path.exists(DATA) and os.path.isdir(_OLD_DATA):
+    try: os.rename(_OLD_DATA, DATA)
+    except OSError: pass
 DB_PATH = os.path.join(DATA, "odv.db")
 SNAPSHOT = os.path.join(DATA, "snapshot.json")
 APPTIME = os.path.join(DATA, "apptime.jsonl")

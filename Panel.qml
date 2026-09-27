@@ -6,22 +6,22 @@ import qs.Ui
 import qs.Commons
 import "charts.js" as Charts
 
-// agf.data-visualization — "Agent Activity" bar button + large dashboard panel.
+// agf.agent-activity — "Agent Activity" bar button + large dashboard panel.
 //
 // Data: bin/odv.py (the collector, shipped next to this file) parses Pi / Claude Code / Codex
-// session logs into ~/.local/share/omarchy-data-visualization/odv.db and writes snapshot.json,
-// which this panel watches. A systemd user timer runs it every 10 min; opening the panel also
-// runs it when the snapshot is older than 2 min.
+// session logs into ~/.local/share/omarchy-agent-activity/odv.db and writes snapshot.json,
+// which this panel watches. It runs only when you ask (↻, R, right-click the bar icon); the time slider's
+// windows (frames-<range>.json) are built in the background afterwards.
 //
-// App time: this widget samples the focused window every 30 s (and on every focus change) with
+// App time (off by default, sampleAppTime): this widget can sample the focused window every 30 s (and on every focus change) with
 // Quickshell's IdleMonitor, appending to apptime.jsonl; the collector turns samples into spans.
 //
 // Charts are drawn by charts.js (shared with dev/index.html) on Canvas items, in theme colours
 // read from the current theme's colors.toml.
 Panel {
   id: root
-  moduleName: "agf.data-visualization"
-  ipcTarget: "agf.data-visualization"
+  moduleName: "agf.agent-activity"
+  ipcTarget: "agf.agent-activity"
   manageIpc: false          // we own the IpcHandler below (adds refresh / setRange)
 
   implicitWidth: button.implicitWidth
@@ -29,7 +29,7 @@ Panel {
 
   readonly property string glyph: "󰄧"   // nf-md-chart_areaspline
   readonly property string home: Quickshell.env("HOME")
-  readonly property string realDataDir: home + "/.local/share/omarchy-data-visualization"
+  readonly property string realDataDir: home + "/.local/share/omarchy-agent-activity"
   // IPC useData <dir> shows another data set (e.g. dev/fake-data for screenshots); refresh then only re-reads it
   property string dataOverride: ""
   readonly property string dataDir: dataOverride !== "" ? dataOverride : realDataDir
@@ -232,8 +232,11 @@ Panel {
   }
 
   // ---- app-time sampling ---------------------------------------------------------------
+  // Off: the App time tile is hidden, and recording window titles should be an explicit opt-in.
+  readonly property bool sampleAppTime: false
   IdleMonitor {
     id: idleMon
+    enabled: root.sampleAppTime
     timeout: 120
     respectInhibitors: true          // a playing video keeps you "present"
     onIsIdleChanged: root.sample()
@@ -251,12 +254,13 @@ Panel {
     appendProc.running = true
   }
   function sample() {
+    if (!root.sampleAppTime) return
     var t = ToplevelManager.activeToplevel
     var line = JSON.stringify({ ts: Date.now() / 1000, app: t ? (t.appId || "") : "", title: t ? (t.title || "") : "", idle: idleMon.isIdle })
     var p = pendingLines.slice(); p.push(line); pendingLines = p
     flushSamples()
   }
-  Timer { interval: 30000; running: true; repeat: true; triggeredOnStart: true; onTriggered: root.sample() }
+  Timer { interval: 30000; running: root.sampleAppTime; repeat: true; triggeredOnStart: true; onTriggered: root.sample() }
   Connections {
     target: ToplevelManager
     function onActiveToplevelChanged() { root.sample() }
@@ -273,7 +277,7 @@ Panel {
     }
   }
   IpcHandler {
-    target: "agf.data-visualization"
+    target: "agf.agent-activity"
     function open(): void { root.open() }
     function close(): void { root.close() }
     function show(): void { root.open() }

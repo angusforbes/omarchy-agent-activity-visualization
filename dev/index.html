@@ -2,9 +2,9 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>omarchy-data-visualization — dev preview (real snapshot)</title>
+<title>Agent Activity — dev preview (real snapshot)</title>
 <!-- Open with: chromium --allow-file-access-from-files dev/index.html
-     Mirrors the QML panel layout; charts come from ../plugin/charts.js (the same code the panel runs). -->
+     Mirrors the QML panel layout; charts come from ../charts.js (the same code the panel runs). -->
 <style>
   :root { --bg:#fff; --fg:#575279; --accent:#56949f; --muted:#9893a5; --desk:#ede7e1; --font:"JetBrainsMono Nerd Font", monospace; }
   * { box-sizing: border-box; }
@@ -34,7 +34,7 @@
   .foot { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--muted); margin-top: 12px; }
   #tip { position: absolute; pointer-events: none; background: var(--bg); border: 1px solid var(--accent); padding: 5px 8px; font-size: 11px; display: none; white-space: pre; z-index: 9; }
 </style>
-<script src="../plugin/charts.js"></script>
+<script src="../charts.js"></script>
 </head>
 <body>
 <div class="panel">
@@ -93,7 +93,7 @@ function render() {
   document.getElementById("footR").textContent = `Pi ${c.pi} · Claude Code ${c.claude} · Codex ${c.codex} sessions · updated ${age} min ago`;
 }
 document.querySelectorAll("#seg button").forEach(b => b.onclick = () => { R = b.dataset.r; render(); });
-fetch(qs.get("snap") || "snapshot.json")   // e.g. ?snap=file:///home/you/.local/share/omarchy-data-visualization/snapshot.json
+fetch(qs.get("snap") || "snapshot.json")   // e.g. ?snap=file:///home/you/.local/share/omarchy-agent-activity/snapshot.json
 .then(r => r.json()).then(s => { SNAP = s; document.fonts.ready.then(render); });
 </script>
 </body>

@@ -1,4 +1,4 @@
-// charts.js — Canvas 2D renderers for omarchy-data-visualization.
+// charts.js — Canvas 2D renderers for the Agent Activity plugin.
 // Shared by the QML panel (`import "charts.js" as Charts`) and the browser dev page (<script src>).
 // Every draw function: (ctx, w, h, snap, key, P) → hits[] for tooltips ({x,y,w,h,text}).
 // P (palette): { bg, fg, accent, you, themes: [..], kinds: {name: color}, font }.
