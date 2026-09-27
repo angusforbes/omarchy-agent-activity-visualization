@@ -46,7 +46,7 @@ function tsLabel(ts, key) {
   if (key === "15m" || key === "1h" || key === "6h") return (d.getHours() < 10 ? "0" : "") + d.getHours() + ":" + (d.getMinutes() < 10 ? "0" : "") + d.getMinutes();
   if (key === "24h") return (d.getHours() < 10 ? "0" : "") + d.getHours();
   if (key === "7d") return (d.getMonth() + 1) + "/" + d.getDate();
-  if (key === "1mo") return (d.getMonth() + 1) + "/" + d.getDate();
+  if (key === "1mo" || key === "6mo") return (d.getMonth() + 1) + "/" + d.getDate();
   return MONTHS[d.getMonth()];
 }
 function themeColor(P, snap, name) {

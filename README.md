@@ -14,7 +14,7 @@ and Codex. Everything is computed locally from the agents' session logs; nothing
 work kind) · themes over time (stream) · topic map (circle pack) · rising/fading terms · agents at once ·
 tools by work kind · subagents by type and outcome · subagent runs.
 
-**Time:** ranges 15m · 1h · 6h · 24h · 7d · 1mo · 1y, and a time slider (drag, ←/→, or ▶ play) that replays
+**Time:** ranges 15m · 1h · 6h · 24h · 7d · 1mo (optionally 6mo and 1y, see `maxRange`), and a time slider (drag, ←/→, or ▶ play) that replays
 any range back through your history. The Sankey can be scaled to the window or to the busiest window ever.
 
 ## Requirements
@@ -37,7 +37,7 @@ Click the chart icon (󰄧) in the top bar to open the dashboard. The first open
 icon. Nothing runs on a schedule. After a refresh the time slider's windows are built in the background
 (up to ~20 s on a large history).
 
-Keys: `1`–`7` or ↑/↓ switch range, ←/→ or `[` `]` move the time slider, `P`/space plays, `S` switches the
+Keys: number keys or ↑/↓ switch range, ←/→ or `[` `]` move the time slider, `P`/space plays, `S` switches the
 Sankey scale, `R` refreshes, Esc closes.
 
 Shell commands:
@@ -70,6 +70,9 @@ Data and settings live in `~/.local/share/omarchy-agent-activity/`: `odv.db` (SQ
 `frames-*.json` (time-slider windows) and `config.json`, which is created on the first run and can be edited
 (press R in the panel afterwards):
 
+- `maxRange`: the longest range offered, `"1mo"` by default; `"6mo"` or `"1y"` add those buttons. The
+  collector only reads history it needs (twice that span, for the "vs previous" comparison), so a longer
+  range means a slower refresh on a large history.
 - `sources`: session log folders per agent, replacing the defaults above, e.g.
   `"sources": {"claude": ["~/work-machine/.claude/projects"], "codex": ["/data/codex/sessions"]}`.
 - `projectRoots`: folders whose sub-folders are your projects (default `~/Work`, `~/code`, `~/projects`,

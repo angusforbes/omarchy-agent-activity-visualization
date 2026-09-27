@@ -70,7 +70,7 @@ def load_config():
             print(f"odv: bad {CONFIG}: {e}", file=sys.stderr)
     else:
         os.makedirs(DATA, exist_ok=True)
-        json.dump({**DEFAULT_CONFIG, "projectRoots": DEFAULT_PROJECT_ROOTS, "sources": {}}, open(CONFIG, "w"), indent=2)
+        json.dump({**DEFAULT_CONFIG, "maxRange": DEFAULT_MAX_RANGE, "projectRoots": DEFAULT_PROJECT_ROOTS, "sources": {}}, open(CONFIG, "w"), indent=2)
     ACTIVE_THEME_RULES = cfg.get("themeRules") or THEME_RULES
     global PROJECT_RX, PROJECT_ROOTS
     PROJECT_ROOTS = {os.path.expanduser(r).rstrip("/") for r in (cfg.get("projectRoots") or DEFAULT_PROJECT_ROOTS)}
@@ -555,6 +555,7 @@ def build_turns(source, path, sid, cwd, sub, entries, cfg):
     return turns
 
 def ingest(con, cfg, verbose=False):
+    h0 = history_start(cfg)
     known = {r[0]: (r[1], r[2]) for r in con.execute("SELECT path,size,mtime FROM files")}
     changed = 0
     for source, parser in SOURCES.items():
@@ -562,7 +563,7 @@ def ingest(con, cfg, verbose=False):
         paths = sorted(source_files(source, cfg), key=lambda p: os.path.basename(p) if source == "pi" else os.path.getmtime(p))
         for path in paths:
             st = os.stat(path)
-            if known.get(path) == (st.st_size, st.st_mtime):
+            if known.get(path) == (st.st_size, st.st_mtime) or st.st_mtime < h0:   # unchanged, or older than maxRange needs
                 continue
             try:
                 sid, cwd, sub, entries, meta = parser(path)
@@ -1088,8 +1089,23 @@ RANGES = {  # hours, stream/conc buckets, mix buckets
     "24h": (24, 24, 12, "last 24 hours"),
     "7d": (168, 42, 7, "last 7 days"),
     "1mo": (720, 30, 15, "last 30 days"),
+    "6mo": (4368, 26, 13, "last 6 months"),
     "1y": (8760, 52, 12, "last 12 months"),
 }
+DEFAULT_MAX_RANGE = "1mo"
+
+def max_range(cfg):
+    """config.json "maxRange": the longest range offered (and how much history is read: twice that span)."""
+    m = (cfg or {}).get("maxRange") or DEFAULT_MAX_RANGE
+    return m if m in RANGES else DEFAULT_MAX_RANGE
+
+def ranges_for(cfg):
+    keys = list(RANGES)
+    return keys[:keys.index(max_range(cfg)) + 1]
+
+def history_start(cfg, now=None):
+    """Oldest time worth reading: two spans of the longest range (the range plus its "vs previous" period)."""
+    return (now or time.time()) - 2 * RANGES[max_range(cfg)][0] * 3600
 FAMILIES = ["haiku", "sonnet", "opus", "fable", "gpt", "kimi", "other"]
 
 def family(model):
@@ -1225,15 +1241,23 @@ def build(con, cfg, now=None, out=SNAPSHOT):
     return snap
 
 # Time-slider frames: the same range, ending `step` earlier each frame (frame 0 = now). 1y has none.
-FRAMES = {"15m": (300, 12 * 24), "1h": (600, 6 * 48), "6h": (1800, 2 * 24 * 7), "24h": (3600, 7 * 24), "7d": (6 * 3600, 120), "1mo": (86400, 90)}
+FRAMES = {"15m": (300, 12 * 24), "1h": (600, 6 * 48), "6h": (1800, 2 * 24 * 7), "24h": (3600, 7 * 24), "7d": (6 * 3600, 120),
+          "1mo": (86400, 90), "6mo": (7 * 86400, 52)}
 SHORT_HEAT = {"15m": (15, 60), "1h": (12, 300), "6h": (24, 900)}   # heat columns, seconds per column
 
 def build_frames(con, cfg, now=None):
     """Write frames-<range>.json for the panel's time slider: frame i ends i*step before now, back to the first data."""
     now = now or time.time()
-    units = load_units(con, cfg, "turn")
-    first = min((u["start"] for u in units), default=now)
+    h0 = history_start(cfg, now)
+    units = [u for u in load_units(con, cfg, "turn") if u["end"] >= h0]
+    first = max(h0, min((u["start"] for u in units), default=now))
+    allowed = ranges_for(cfg)
+    for key in list(FRAMES):
+        if key not in allowed:   # beyond maxRange: drop stale frames from a larger setting
+            try: os.remove(os.path.join(DATA, f"frames-{key}.json"))
+            except OSError: pass
     for key, (step, cap) in FRAMES.items():
+        if key not in allowed: continue
         out, i = [], 0
         while i <= cap and (i == 0 or now - i * step > first + step):
             out.append(build_level(con, cfg, "turn", now - i * step, units=units, only=key)["ranges"][key]); i += 1
@@ -1246,7 +1270,9 @@ _SETUP_CACHE = {}
 _PEAK_CACHE = {}
 
 def build_level(con, cfg, level, now=None, units=None, only=None):
-    units = units if units is not None else load_units(con, cfg, level)
+    if units is None:
+        h0 = history_start(cfg, now)
+        units = [u for u in load_units(con, cfg, level) if u["end"] >= h0]
     now = now or time.time()
     now_h = (int(now) // 3600 + 1) * 3600          # end of the current hour
     themes_all = list(cfg["themes"].keys()) + ["Other"]
@@ -1282,13 +1308,14 @@ def build_level(con, cfg, level, now=None, units=None, only=None):
     if _TP_CACHE.get("names") != names: _TP_CACHE.update(names=names, parents=topic_parents(names))   # slow; reused by slider frames
     parent_of = _TP_CACHE["parents"]
 
-    snap = {"generated": now, "sources": {k: [d.replace(HOME, "~", 1) for d in v] for k, v in source_dirs(cfg).items()}, "level": level, "themes": themes, "activities": acts, "kinds": [KINDS[k] for k in kinds],
+    snap = {"generated": now, "rangeOrder": ranges_for(cfg), "sources": {k: [d.replace(HOME, "~", 1) for d in v] for k, v in source_dirs(cfg).items()}, "level": level, "themes": themes, "activities": acts, "kinds": [KINDS[k] for k in kinds],
             "jev": False, "tagging": "rules",
             "counts": {k: con.execute("SELECT COUNT(DISTINCT session) FROM turns WHERE source=? AND sub=0", (k,)).fetchone()[0] for k in ("pi", "claude", "codex")},
             "first": min((u["start"] for u in units), default=now), "ranges": {}}
 
     for key, (hours, nb, nmix, label) in RANGES.items():
         if only and key != only: continue
+        if key not in ranges_for(cfg): continue
         span = hours * 3600
         if hours < 24:
             cell = SHORT_HEAT[key][1]
@@ -1363,7 +1390,7 @@ def build_level(con, cfg, level, now=None, units=None, only=None):
                 ag[i // 24][i % 24] = flat_a[i]; yo[i // 24][i % 24] = flat_y[i]
             R["heat"] = {"mode": "day-hour", "rows": rows, "cols": [f"{h:02d}" for h in range(24)], "agent": ag, "you": yo}
         else:
-            weeks = 52; w0 = t1 - weeks * 7 * 86400
+            weeks = int(round(hours / 168)); w0 = t1 - weeks * 7 * 86400
             ag = [[0.0] * weeks for _ in range(24)]; yo = [[0.0] * weeks for _ in range(24)]
             flat_a = [0.0] * (weeks * 168); flat_y = [0.0] * (weeks * 168)
             for u in cur:

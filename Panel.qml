@@ -154,12 +154,14 @@ Panel {
     var R = root.view ? root.view.ranges[root.range] : null
     if (!R) return ""
     if (root.back === 0) return R.label.toUpperCase()
-    var words = { "15m": "15 MIN", "1h": "1 HOUR", "6h": "6 HOURS", "24h": "24 HOURS", "7d": "7 DAYS", "1mo": "30 DAYS" }[root.range]
-    var fmt = root.range === "1mo" ? "M/d" : (["15m", "1h", "6h"].indexOf(root.range) >= 0 ? "M/d h:mm AP" : "M/d h AP")
+    var words = { "15m": "15 MIN", "1h": "1 HOUR", "6h": "6 HOURS", "24h": "24 HOURS", "7d": "7 DAYS", "1mo": "30 DAYS", "6mo": "6 MONTHS" }[root.range]
+    var fmt = root.range === "1mo" || root.range === "6mo" ? "M/d" : (["15m", "1h", "6h"].indexOf(root.range) >= 0 ? "M/d h:mm AP" : "M/d h AP")
     return words + " TO " + Qt.formatDateTime(new Date(R.t1 * 1000), fmt).toUpperCase()
   }
   onLevelChanged: paintTick++
-  readonly property var ranges: ["15m", "1h", "6h", "24h", "7d", "1mo", "1y"]
+  // ranges offered: up to config.json "maxRange" (default 1mo), as listed by the collector in the snapshot
+  readonly property var ranges: snap && snap.rangeOrder ? snap.rangeOrder : ["15m", "1h", "6h", "24h", "7d", "1mo"]
+  onRangesChanged: if (ranges.indexOf(range) < 0) range = ranges[ranges.length - 1]
   property bool collecting: false
   property int paintTick: 0          // bump to repaint every chart
 
@@ -474,8 +476,8 @@ Panel {
         root.range = root.ranges[Math.max(0, Math.min(root.ranges.length - 1, i + dy))]
       }
       onTextKey: function(t) {
-        var i = "1234567".indexOf(t)
-        if (i >= 0) root.range = root.ranges[i]
+        var i = "123456789".indexOf(t)
+        if (i >= 0 && i < root.ranges.length) root.range = root.ranges[i]
         else if (t === "r" || t === "R") root.collect()
         else if (t === "[") root.stepBack(1)
         else if (t === "]") root.stepBack(-1)
@@ -781,7 +783,7 @@ Panel {
             Text {
               id: footL
               width: parent.width - footR.implicitWidth - Style.space(24); elide: Text.ElideRight
-              text: root.snap ? "no AI · 1–7 or ↑↓ range · ←→ time · P play · S Sankey scale · R refresh" : ""
+              text: root.snap ? "no AI · 1–8 or ↑↓ range · ←→ time · P play · S Sankey scale · R refresh" : ""
               color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
             }
             Text {
