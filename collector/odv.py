@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS jevprobs(turn TEXT, method TEXT, level TEXT, probs TEXT, PRIMARY KEY(turn, method, level));
 CREATE TABLE IF NOT EXISTS agenttopic(turn TEXT, method TEXT, area TEXT, project TEXT, subject TEXT, conf REAL, probs TEXT, ts REAL,
   PRIMARY KEY(turn, method));
+CREATE TABLE IF NOT EXISTS commands(ts REAL, path TEXT, source TEXT, session TEXT, name TEXT, how TEXT, PRIMARY KEY(ts, path, name));
 CREATE TABLE IF NOT EXISTS corrections(turn TEXT, field TEXT, value TEXT, ts REAL, PRIMARY KEY(turn, field));
 """
 
@@ -169,9 +170,56 @@ def price(model, cfg):
             return cfg["prices"][k]
     return cfg["prices"]["default"]
 
-def call_of(name, args):
-    """One tool call as (tool, file, command): what it touched, in order."""
+def _mcp_servers():
+    """Configured MCP server names (Pi's mcp.json, Claude's ~/.claude.json), for turning tool names into server + tool."""
+    names = set()
+    for f, key in ((os.path.join(HOME, ".pi/agent/mcp.json"), "mcpServers"), (os.path.join(HOME, ".claude.json"), "mcpServers")):
+        try:
+            d = json.load(open(f))
+            if isinstance(d, dict) and isinstance(d.get(key), dict): names |= set(d[key].keys())
+        except Exception:
+            pass
+    return sorted((n for n in names if isinstance(n, str) and len(n) < 60), key=len, reverse=True)
+MCP_SERVERS = _mcp_servers()
+
+def mcp_target(name, args):
+    """(server, tool) for any MCP call: Pi's mcp__<server> proxy, Pi's `mcp` gateway, mcpScript, Claude's mcp__<server>__<tool>."""
     a = args if isinstance(args, dict) else {}
+    n = name or ""
+    def split(tool):
+        t = tool or ""
+        for srv in MCP_SERVERS:
+            for pre in (srv + "_", srv.replace("-", "_") + "_"):
+                if t.startswith(pre): return srv, t[len(pre):]
+        return "", t
+    if n == "mcpScript": return "script", "mcpScript"
+    if n == "mcp":
+        tool = a.get("tool") or ""
+        srv, t = split(tool)
+        if a.get("server"): srv = a["server"]
+        if not tool:
+            t = next((k for k in ("action", "search", "describe", "connect", "instructions") if a.get(k)), "status")
+            t = {"search": "search tools", "describe": "describe tool", "connect": "connect", "instructions": "instructions"}.get(t, t)
+        return srv or "(gateway)", t
+    if n.startswith("mcp__"):
+        rest = n[5:]
+        if "__" in rest:                                   # Claude Code: mcp__server__tool
+            srv, t = rest.split("__", 1); return srv, t
+        srv = next((x for x in MCP_SERVERS if x.replace("-", "_") == rest or x == rest), rest)   # Pi proxy: mcp__<server>
+        _, t = split(a.get("tool") or "")
+        return srv, t or a.get("tool") or "?"
+    return None
+
+def mcp_calls(calls):
+    """'server · tool' for every MCP call in a turn."""
+    return [c[2][4:].replace(":", " · ", 1) for c in calls if c[2].startswith("mcp:")]
+
+def call_of(name, args):
+    """One tool call as (tool, file, command): what it touched, in order. MCP calls carry "mcp:server:tool"."""
+    a = args if isinstance(args, dict) else {}
+    if (name or "").startswith("mcp"):
+        tg = mcp_target(name, a)
+        if tg: return [norm_tool(name), "", f"mcp:{tg[0]}:{tg[1]}"[:160]]
     path = next((a[k] for k in FILE_KEYS if isinstance(a.get(k), str)), "")
     cmd = a.get("command") if isinstance(a.get("command"), str) else " ".join(a["command"]) if isinstance(a.get("command"), list) else ""
     q = a.get("query") or (a.get("queries") or [""])[0] if isinstance(a.get("queries"), list) else a.get("query") or ""
@@ -187,13 +235,51 @@ class Entry:
 # ─────────────────────────── source parsers ───────────────────────────
 # Each returns (session_id, cwd, sub_agent: bool, [Entry]) — entries in time order.
 
+PATHLIKE = {"/tmp", "/home", "/usr", "/etc", "/dev", "/opt", "/var", "/run", "/mnt", "/proc", "/sys", "/root", "/srv", "/boot", "/bin", "/lib"}
+def _templates():
+    """Pi prompt templates: /<name> → the first line of its body, so an expanded template can be recognised."""
+    out = {}
+    d = os.path.join(HOME, ".pi/agent/prompts")
+    for f in glob.glob(os.path.join(d, "*.md")):
+        try:
+            body = open(f).read().split("---", 2)[-1] if open(f).read().startswith("---") else open(f).read()
+            line = next((l.strip() for l in body.splitlines() if l.strip() and "${" not in l), "")
+            if len(line) >= 20: out[line[:60]] = "/" + os.path.splitext(os.path.basename(f))[0]
+        except Exception:
+            pass
+    return out
+TEMPLATES = _templates()
+
+def slash_of(text, cfg_sigs=None):
+    """The slash command behind a user message: typed (/reload), an expanded prompt template, or a configured signature."""
+    t = (text or "").lstrip()
+    m = re.match(r"(/[a-zA-Z][\w:-]*)(?=\s|$)", t)
+    if m and m.group(1).lower() not in PATHLIKE: return m.group(1).lower()
+    for sig, name in list(TEMPLATES.items()) + list((cfg_sigs or {}).items()):
+        if t.startswith(sig): return name
+    return None
+
 DUR_RX = re.compile(r'^Sub-agent "([^"]+)" (\w+) \((?:(\d+)h ?)?(?:(\d+)m ?)?(?:(\d+)s)?\)')
 
 def parse_pi(path):
     sid, cwd, sub, entries = os.path.basename(path), "", False, []
-    meta = {"subtype": "", "subid": "", "runs": []}
+    meta = {"subtype": "", "subid": "", "runs": [], "commands": []}
+    seen_model = seen_think = False
+    sigs = (load_config().get("commandSignatures") or {})
     for o in jsonl(path):
         t = o.get("type")
+        tsx = iso(o.get("timestamp", "") or "")
+        # commands that leave their own entries: later model / thinking changes, /name, /compact
+        if tsx and t == "model_change":
+            if seen_model: meta["commands"].append((tsx, "/model", "model change"))
+            seen_model = True
+        elif tsx and t == "thinking_level_change":
+            if seen_think: meta["commands"].append((tsx, "/thinking", "thinking level"))
+            seen_think = True
+        elif tsx and t == "compaction":
+            meta["commands"].append((tsx, "/compact", "compaction"))
+        elif tsx and t == "session_info" and o.get("name") and "#" not in (o.get("name") or ""):
+            meta["commands"].append((tsx, "/name", "session name"))
         if t == "session":
             sid, cwd = o.get("id", sid), o.get("cwd", "")
             sub = bool(o.get("parentSession"))
@@ -235,6 +321,8 @@ def parse_pi(path):
         if role == "user":
             text = content if isinstance(content, str) else " ".join(c.get("text", "") for c in (content or []) if isinstance(c, dict) and c.get("type") == "text")
             entries.append(Entry(ts, "user", key, text=text))
+            sl = slash_of(text, sigs)
+            if sl: meta["commands"].append((ts, sl, "typed"))
         elif role == "assistant":
             tools, files, text, calls = [], [], "", []
             for c in content or []:
@@ -259,7 +347,7 @@ def parse_pi(path):
 def parse_claude(path):
     sid, cwd, entries, seen_msg = os.path.splitext(os.path.basename(path))[0], "", [], set()
     sub = "/subagents/" in path
-    meta = {"subtype": "", "subid": "", "runs": []}
+    meta = {"subtype": "", "subid": "", "runs": [], "commands": []}
     if sub:
         try:
             meta["subtype"] = json.load(open(path[:-len(".jsonl")] + ".meta.json")).get("agentType") or "subagent"
@@ -281,6 +369,8 @@ def parse_claude(path):
             if o.get("isMeta"):
                 continue
             if isinstance(c, str):
+                cm = re.search(r"<command-name>(/[\w:-]+)</command-name>", c)
+                if cm: meta["commands"].append((ts, cm.group(1).lower(), "typed")); continue
                 entries.append(Entry(ts, "user", "cc:" + (o.get("uuid") or str(ts)), text=c))
             elif isinstance(c, list):
                 if any(isinstance(x, dict) and x.get("type") == "tool_result" for x in c):
@@ -348,6 +438,7 @@ def parse_codex(path):
                     files += tool_files({"command": it.get("command") if isinstance(it.get("command"), str) else " ".join(it.get("command") or [])})
                 cmdtxt = it.get("command") if isinstance(it.get("command"), str) else " ".join(it.get("command") or [])
                 calls = [[norm_tool(name), f[:200], ""] for f in files[:5]] if ity == "FileChange" else [[norm_tool(name), (files[0] if files else "")[:200], (cmdtxt or "")[:160]]]
+                if ity == "McpToolCall": calls = [["desktop" if "hyprcu" in str(it.get("server")) else "other", "", f"mcp:{it.get('server') or '?'}:{it.get('tool') or '?'}"[:160]]]
                 entries.append(Entry(ts, "assistant", key, tools=[name], files=files, model=model, calls=calls))
         elif pt == "token_count":
             u = ((p.get("info") or {}).get("last_token_usage")) or {}
@@ -453,6 +544,9 @@ def ingest(con, cfg, verbose=False):
             turns = build_turns(source, path, sid, cwd, sub, fresh, cfg)
             for t in turns:
                 t["sub"], t["subtype"], t["subid"] = int(sub), meta["subtype"] if sub else "", meta["subid"] if sub else ""
+            con.execute("DELETE FROM commands WHERE path=?", (path,))
+            con.executemany("INSERT OR REPLACE INTO commands VALUES(?,?,?,?,?,?)",
+                            [(ts_, path, source, sid, name_, how_) for ts_, name_, how_ in meta.get("commands", [])])
             con.execute("DELETE FROM subruns WHERE path=?", (path,))
             for r in meta["runs"]:   # records repeat as status changes (and in copied history): keep the latest
                 old = con.execute("SELECT path FROM subruns WHERE key=?", (r["key"],)).fetchone()
@@ -966,6 +1060,7 @@ def spread(segs, t0, blen, n, arr, w=1.0):
         while s < e:
             i = int((s - t0) // blen)
             nb = t0 + (i + 1) * blen
+            if nb <= s: i += 1; nb += blen       # float rounding put s on the bucket edge: never take a zero step
             chunk = min(e, nb) - s
             if 0 <= i < n: arr[i] += chunk * w
             s += chunk

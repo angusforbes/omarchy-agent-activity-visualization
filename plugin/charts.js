@@ -460,9 +460,10 @@ function conc(ctx, w, h, snap, key, P) {
   ctx.strokeStyle = P.fg; ctx.lineWidth = 1.6; ctx.stroke();
   var mi = C.peak.indexOf(Math.max.apply(null, C.peak));
   if (C.peak[mi] > 0) {
-    ctx.beginPath(); ctx.arc(x(mi), y(C.peak[mi]), 4.5, 0, 2 * Math.PI); ctx.fillStyle = P.bg; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = P.accent; ctx.stroke();
+    var px = Math.min(x(mi), w - 6);   // keep the marker inside the canvas when the peak is the last bucket
+    ctx.beginPath(); ctx.arc(px, y(C.peak[mi]), 4.5, 0, 2 * Math.PI); ctx.fillStyle = P.bg; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = P.accent; ctx.stroke();
     ctx.font = font(P, 10, true); var lab = "peak " + C.peak[mi], lw = ctx.measureText(lab).width;
-    var lx = x(mi) + 7 + lw > w ? x(mi) - 7 - lw : x(mi) + 7;
+    var lx = px + 7 + lw > w ? px - 9 - lw : px + 7;
     halo(ctx, P, lab, lx, y(C.peak[mi]) + 3.5, P.accent); ctx.font = font(P, 10);
   }
   ctx.fillStyle = rgba(P.fg, 0.55);

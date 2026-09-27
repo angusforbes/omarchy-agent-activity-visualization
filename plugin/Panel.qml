@@ -29,7 +29,10 @@ Panel {
 
   readonly property string glyph: "󰄧"   // nf-md-chart_areaspline
   readonly property string home: Quickshell.env("HOME")
-  readonly property string dataDir: home + "/.local/share/omarchy-data-visualization"
+  readonly property string realDataDir: home + "/.local/share/omarchy-data-visualization"
+  // IPC useData <dir> shows another data set (e.g. dev/fake-data for screenshots); refresh then only re-reads it
+  property string dataOverride: ""
+  readonly property string dataDir: dataOverride !== "" ? dataOverride : realDataDir
   readonly property string cli: String(Qt.resolvedUrl("bin/odv.py")).replace(/^file:\/\//, "")
 
   property var snap: null
@@ -221,6 +224,7 @@ Panel {
   }
   property bool skipFrames: false     // live refreshes don't rebuild the slider frames (~20 s); ↻ does
   function collect(quick) {
+    if (root.dataOverride !== "") { snapFile.reload(); framesFile.reload(); return }
     if (runProc.running) return
     root.skipFrames = !!quick
     root.collecting = true
@@ -243,7 +247,7 @@ Panel {
     if (appendProc.running || pendingLines.length === 0) return
     var payload = pendingLines.join("\n")
     pendingLines = []
-    appendProc.command = ["sh", "-c", "mkdir -p \"$1\" && printf '%s\\n' \"$2\" >> \"$1/apptime.jsonl\"", "sh", root.dataDir, payload]
+    appendProc.command = ["sh", "-c", "mkdir -p \"$1\" && printf '%s\\n' \"$2\" >> \"$1/apptime.jsonl\"", "sh", root.realDataDir, payload]
     appendProc.running = true
   }
   function sample() {
@@ -287,6 +291,8 @@ Panel {
       root.back = b0
       return JSON.stringify(out)
     }
+    function useData(dir: string): void { root.placedRange = ""; root.anchorEnd = 0; root.back = 0; root.dataOverride = dir; snapFile.reload(); framesFile.reload() }
+    function useRealData(): void { root.placedRange = ""; root.anchorEnd = 0; root.back = 0; root.dataOverride = ""; snapFile.reload(); framesFile.reload() }
     function debugState(): string { var R = root.view ? root.view.ranges[root.range] : null; return JSON.stringify({ range: root.range, back: root.back, maxBack: root.maxBack, anchorEnd: root.anchorEnd, placed: root.placedRange, t1: R ? new Date(R.t1 * 1000).toString() : null, live: root.live, label: root.endLabel() }) }
     function debugBack(i: int): void { root.setBack(i) }
     function debugSize(): string { return JSON.stringify({ col: column.implicitHeight, avail: root.contentAvail, fixed: root.fixedHeight, budget: root.chartBudget, w: panel.contentWidth, hdr: header.height, kpi: kpiRow.height, r1: row1.height, r2: row2.height, r3: row3.height, foot: footer.height, th: root.tileHead, t1: heatTile.height, h1: root.h1 }) }
@@ -314,7 +320,7 @@ Panel {
   }
   readonly property var kpis: view ? Charts.kpiItems(view, range) : []
   function heatCaption() {
-    if (!snap) return ""
+    if (!view || !view.ranges[range]) return ""
     var m = view.ranges[range].heat.mode
     return (m === "theme-hour" ? "theme × hour" : m === "theme-time" ? "theme × minute" : m === "day-hour" ? "day × hour of day" : "week × hour of day") + " · agent time vs your time"
   }
@@ -756,10 +762,12 @@ Panel {
             height: footL.implicitHeight
             Text {
               id: footL
-              text: root.snap ? "no AI · keyword/path rules · work kind from tool calls · 1–7 or ↑↓ range · ←→ or slider: back in time · P play · S Sankey scale · ↻ or R refresh" : ""
+              width: parent.width - footR.implicitWidth - Style.space(24); elide: Text.ElideRight
+              text: root.snap ? "no AI · 1–7 or ↑↓ range · ←→ time · P play · S Sankey scale · R refresh" : ""
               color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
             }
             Text {
+              id: footR
               anchors.right: parent.right
               text: root.snap ? "Pi " + root.snap.counts.pi + " · Claude Code " + root.snap.counts.claude + " · Codex " + root.snap.counts.codex + " sessions · data from " + Qt.formatDateTime(new Date(root.snap.generated * 1000), "ddd h:mm AP") : ""
               color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption

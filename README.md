@@ -4,6 +4,12 @@ An [Omarchy](https://omarchy.org) top-bar widget (plugin id `agf.data-visualizat
 large dashboard of what your coding agents worked on: [Pi](https://github.com/badlogic/pi-mono), Claude Code and Codex.
 Everything is computed locally from the agents' session logs; nothing is sent anywhere.
 
+![Agent Activity, last 7 days](docs/screenshot-7d.png)
+
+![Agent Activity, last 30 days](docs/screenshot-1mo.png)
+
+*Screenshots use made-up data from `dev/fake_data.py`.*
+
 **Charts:** when (heat map, agent time vs your time) · where the tokens went (Sankey: tokens → agent → theme →
 work kind) · themes over time (stream) · topic map (circle pack) · rising/fading terms · agents at once ·
 tools by work kind · subagents by type and outcome · subagent runs.
@@ -25,6 +31,7 @@ shows an old version.
 | `collector/odv.py` | Collector (stdlib Python). Parses session logs → SQLite, tags turns, writes `snapshot.json`. |
 | `plugin/Panel.qml` | Bar button + panel (KeyboardPanel like Bluetooth). Watches the snapshot; samples app focus for app time (tile hidden for now, data still collected). |
 | `plugin/charts.js` | All chart drawing (Canvas 2D), shared by the panel and the dev page. |
+| `dev/fake_data.py` | Generates a fake data set (`dev/fake-data/`) for screenshots and demos; show it with `omarchy-shell agf.data-visualization useData <dir>`, back with `useRealData`. |
 | `dev/index.html` | Browser preview of the charts: `chromium --allow-file-access-from-files "dev/index.html?snap=file://$HOME/.local/share/omarchy-data-visualization/snapshot.json"` |
 | `install.sh` | Installs the plugin and `~/.local/bin/odv`. No timer: data refreshes only when you ask. |
 
