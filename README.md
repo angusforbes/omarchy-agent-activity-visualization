@@ -48,13 +48,33 @@ omarchy-shell agf.agent-activity refresh
 omarchy-shell agf.agent-activity setRange 1mo
 ```
 
+## Where the data comes from
+
+The collector reads each agent's session logs where that agent keeps them, honouring the agent's own settings:
+
+| Agent | Default folder | Also honours |
+|---|---|---|
+| Pi | `~/.pi/agent/sessions/` | `PI_CODING_AGENT_SESSION_DIR`, Pi's `sessionDir` setting, `PI_CODING_AGENT_DIR` |
+| Claude Code | `~/.claude/projects/` (or `~/.config/claude/projects/`) | `CLAUDE_CONFIG_DIR` |
+| Codex | `~/.codex/sessions/` | `CODEX_HOME` |
+
+Environment variables are read from the shell's environment (set them for your session, not only in a
+terminal), so if your logs live elsewhere, the reliable way is `sources` in `config.json` (below). The
+panel tells you when it finds no sessions and where it looked; `odv.py check` prints the folders it uses.
+
 ## Configure
 
 Move the widget with `omarchy bar move agf.agent-activity --section right`.
 
 Data and settings live in `~/.local/share/omarchy-agent-activity/`: `odv.db` (SQLite), `snapshot.json`,
-`frames-*.json` (time-slider windows) and `config.json`, which is created on the first run and can be edited:
+`frames-*.json` (time-slider windows) and `config.json`, which is created on the first run and can be edited
+(press R in the panel afterwards):
 
+- `sources`: session log folders per agent, replacing the defaults above, e.g.
+  `"sources": {"claude": ["~/work-machine/.claude/projects"], "codex": ["/data/codex/sessions"]}`.
+- `projectRoots`: folders whose sub-folders are your projects (default `~/Work`, `~/code`, `~/projects`,
+  `~/src`, `~/dev`, `~/Developer`, `~/repos`, `~/git`, …). A project is named after its folder there;
+  otherwise after the session folder's top-level folder under your home.
 - `themes` and `themeRules` (theme → regex over prompts, files and folders): the themes in the Sankey,
   stream and topic map. The defaults are generic; add your own projects and keywords.
 - `prices`: $ per million tokens, used to estimate cost for Claude Code and Codex (Pi logs record cost).

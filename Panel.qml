@@ -675,6 +675,20 @@ Panel {
             text: root.collecting ? "Reading agent sessions for the first time…" : "No data yet. Right-click the bar icon (or press R) to collect."
             color: root.dim; font.family: root.ff; font.pixelSize: Style.font.body
           }
+          // no sessions found: say where we looked and how to point it elsewhere
+          Text {
+            readonly property var c: root.snap ? root.snap.counts : null
+            visible: !!c && (c.pi + c.claude + c.codex) === 0 && root.dataOverride === ""
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: {
+              if (!root.snap) return ""
+              var src = root.snap.sources || {}, names = { pi: "Pi", claude: "Claude Code", codex: "Codex" }, parts = []
+              for (var k in names) parts.push(names[k] + ": " + ((src[k] && src[k].length) ? src[k].join(", ") : "no folder found"))
+              return "No agent sessions found (" + parts.join(" · ") + "). If your logs live elsewhere, list their folders under \"sources\" in ~/.local/share/omarchy-agent-activity/config.json, then press R."
+            }
+            color: Color.accent; font.family: root.ff; font.pixelSize: Style.font.body
+          }
 
           // ---------- KPIs ----------
           Row {

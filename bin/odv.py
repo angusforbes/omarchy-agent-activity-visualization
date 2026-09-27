@@ -70,8 +70,11 @@ def load_config():
             print(f"odv: bad {CONFIG}: {e}", file=sys.stderr)
     else:
         os.makedirs(DATA, exist_ok=True)
-        json.dump(DEFAULT_CONFIG, open(CONFIG, "w"), indent=2)
+        json.dump({**DEFAULT_CONFIG, "projectRoots": DEFAULT_PROJECT_ROOTS, "sources": {}}, open(CONFIG, "w"), indent=2)
     ACTIVE_THEME_RULES = cfg.get("themeRules") or THEME_RULES
+    global PROJECT_RX, PROJECT_ROOTS
+    PROJECT_ROOTS = {os.path.expanduser(r).rstrip("/") for r in (cfg.get("projectRoots") or DEFAULT_PROJECT_ROOTS)}
+    PROJECT_RX = project_rx(cfg.get("projectRoots") or DEFAULT_PROJECT_ROOTS)
     return cfg
 
 SCHEMA = """
@@ -452,11 +455,47 @@ def parse_codex(path):
                                      tout=u.get("output_tokens") or 0, tcache=cached, model=model))
     return sid, cwd, False, entries, {"subtype": "", "subid": "", "runs": []}
 
-SOURCES = {
-    "pi": (lambda: glob.glob(os.path.join(HOME, ".pi/agent/sessions/**/*.jsonl"), recursive=True), parse_pi),
-    "claude": (lambda: glob.glob(os.path.join(HOME, ".claude/projects/**/*.jsonl"), recursive=True), parse_claude),
-    "codex": (lambda: glob.glob(os.path.join(HOME, ".codex/sessions/**/*.jsonl"), recursive=True), parse_codex),
-}
+def _expand(p):
+    return os.path.realpath(os.path.expanduser(os.path.expandvars(p)))
+
+def source_dirs(cfg=None):
+    """Where each agent keeps its session logs (existing folders only).
+
+    config.json "sources" ({"pi": [...], "claude": [...], "codex": [...]}) replaces the defaults for a source.
+    Otherwise each tool's own settings are honoured: Pi PI_CODING_AGENT_SESSION_DIR, the sessionDir setting,
+    PI_CODING_AGENT_DIR (default ~/.pi/agent); Claude Code CLAUDE_CONFIG_DIR (default ~/.claude, also
+    ~/.config/claude); Codex CODEX_HOME (default ~/.codex)."""
+    over = (cfg or {}).get("sources") or {}
+    env = os.environ.get
+    pi_agent = env("PI_CODING_AGENT_DIR") or os.path.join(HOME, ".pi/agent")
+    pi = [env("PI_CODING_AGENT_SESSION_DIR")]
+    try:
+        pi.append(json.load(open(os.path.join(os.path.expanduser(pi_agent), "settings.json"))).get("sessionDir"))
+    except Exception:
+        pass
+    pi.append(os.path.join(pi_agent, "sessions"))
+    defaults = {
+        "pi": pi,
+        "claude": [os.path.join(d, "projects") for d in (env("CLAUDE_CONFIG_DIR"), os.path.join(HOME, ".claude"), os.path.join(HOME, ".config/claude")) if d],
+        "codex": [os.path.join(d, "sessions") for d in (env("CODEX_HOME"), os.path.join(HOME, ".codex")) if d],
+    }
+    out = {}
+    for src, dflt in defaults.items():
+        want = over.get(src, dflt)
+        if isinstance(want, str): want = [want]
+        dirs = []
+        for d in want or []:
+            if d and os.path.isdir(_expand(d)) and _expand(d) not in dirs: dirs.append(_expand(d))
+        out[src] = dirs
+    return out
+
+def source_files(src, cfg=None):
+    files = []
+    for d in source_dirs(cfg)[src]:
+        files += glob.glob(os.path.join(d, "**", "*.jsonl"), recursive=True)
+    return sorted(set(files))
+
+SOURCES = {"pi": parse_pi, "claude": parse_claude, "codex": parse_codex}
 
 # ─────────────────────────── turns ───────────────────────────
 
@@ -518,9 +557,9 @@ def build_turns(source, path, sid, cwd, sub, entries, cfg):
 def ingest(con, cfg, verbose=False):
     known = {r[0]: (r[1], r[2]) for r in con.execute("SELECT path,size,mtime FROM files")}
     changed = 0
-    for source, (lister, parser) in SOURCES.items():
+    for source, parser in SOURCES.items():
         # creation order, so an original session owns history that forks/twins later copy
-        paths = sorted(lister(), key=lambda p: os.path.basename(p) if source == "pi" else os.path.getmtime(p))
+        paths = sorted(source_files(source, cfg), key=lambda p: os.path.basename(p) if source == "pi" else os.path.getmtime(p))
         for path in paths:
             st = os.stat(path)
             if known.get(path) == (st.st_size, st.st_mtime):
@@ -655,12 +694,21 @@ def terms_of(prompt, files):
             out.add(b)
     return out
 
+DEFAULT_PROJECT_ROOTS = ["~/Work", "~/work", "~/code", "~/Code", "~/projects", "~/Projects", "~/src", "~/dev",
+                         "~/Developer", "~/repos", "~/git", "~/Documents/GitHub", "~/Documents/Projects"]
+PROJECT_ROOTS = set()
+PROJECT_RX = ""   # set by load_config from config.json "projectRoots": folders whose sub-folders are projects
+
+def project_rx(roots):
+    alts = sorted({re.escape(os.path.expanduser(r).rstrip("/")) for r in roots if r}, key=len, reverse=True)
+    return "(?:" + "|".join(alts) + r")/([^/]+)" if alts else r"(?!x)x"
+
 def topic_candidates(t):
     """Code-extracted topic candidates: project dirs, plugin ids, config apps, from files touched and cwd."""
     c = Counter()
     for f in json.loads(t["files"] or "[]") + [t["cwd"] or ""]:
         f = f.replace("~", HOME)
-        for pat in (r"/Work/([^/]+)", r"/omarchy/plugins/([^/]+)", r"/\.config/([^/]+)", r"/\.pi/agent/extensions/([^/.]+)",
+        for pat in (PROJECT_RX or project_rx(DEFAULT_PROJECT_ROOTS), r"/omarchy/plugins/([^/]+)", r"/\.config/([^/]+)", r"/\.pi/agent/extensions/([^/.]+)",
                     r"/\.pi/agent/(skills|notes)/([^/]+)", r"/Obsidian/([^/]+)"):
             m = re.search(pat, f)
             if m:
@@ -668,6 +716,13 @@ def topic_candidates(t):
                 if name and name not in ("Work",) and not name.startswith("."):
                     c[re.sub(r"\.(md|json|py|js|html)$", "", name)] += 1
                 break
+    if not c:   # no known project root: the session folder's top-level folder under home, e.g. ~/myproj/src -> myproj
+        cwd = (t["cwd"] or "").replace("~", HOME)
+        rel = os.path.relpath(cwd, HOME) if cwd.startswith(HOME + "/") else ""
+        top = rel.split("/")[0] if rel else ""
+        roots = PROJECT_ROOTS or {os.path.expanduser(r) for r in DEFAULT_PROJECT_ROOTS}
+        if top and not top.startswith(".") and top not in ("Desktop", "Downloads", "Documents", "tmp") and os.path.join(HOME, top) not in roots:
+            c[top] += 1
     return c
 
 def heuristic_tag(t, themes):
@@ -821,7 +876,8 @@ def system_part(calls):
             if re.search(rx, t): score[part] += w
     return score.most_common(1)[0][0] if score else "other"
 
-REPO_RX = [(r"/Work/([^/]+)", "{}"), (r"/\.config/omarchy/plugins/([^/]+)", "plugin {}"), (r"/\.pi/agent/extensions/([^/.]+)", "pi ext {}"),
+REPO_RX = [(None, "{}"),   # None = the configured project roots (PROJECT_RX)
+           (r"/\.config/omarchy/plugins/([^/]+)", "plugin {}"), (r"/\.pi/agent/extensions/([^/.]+)", "pi ext {}"),
             (r"/\.pi/agent/skills/([^/]+)", "skill {}"), (r"/\.pi/agent/(notes|npm|sessions)", "pi {}"), (r"/\.config/([^/]+)", "~/.config/{}"),
             (r"/Obsidian/([^/]+)", "Obsidian {}"), (r"^/usr/share/omarchy", "omarchy (system)"), (r"^/tmp/", "/tmp"), (r"/Downloads/", "~/Downloads")]
 
@@ -832,7 +888,7 @@ def repos_of(calls, cwd=""):
     for p in paths:
         p = p.replace("~", HOME, 1) if p.startswith("~") else p
         for rx, fmt in REPO_RX:
-            m = re.search(rx, p)
+            m = re.search(rx or PROJECT_RX or project_rx(DEFAULT_PROJECT_ROOTS), p)
             if m:
                 name = fmt.format(*m.groups()) if m.groups() else fmt
                 if name not in out and not name.endswith(".md"): out.append(name)
@@ -1226,7 +1282,7 @@ def build_level(con, cfg, level, now=None, units=None, only=None):
     if _TP_CACHE.get("names") != names: _TP_CACHE.update(names=names, parents=topic_parents(names))   # slow; reused by slider frames
     parent_of = _TP_CACHE["parents"]
 
-    snap = {"generated": now, "level": level, "themes": themes, "activities": acts, "kinds": [KINDS[k] for k in kinds],
+    snap = {"generated": now, "sources": {k: [d.replace(HOME, "~", 1) for d in v] for k, v in source_dirs(cfg).items()}, "level": level, "themes": themes, "activities": acts, "kinds": [KINDS[k] for k in kinds],
             "jev": False, "tagging": "rules",
             "counts": {k: con.execute("SELECT COUNT(DISTINCT session) FROM turns WHERE source=? AND sub=0", (k,)).fetchone()[0] for k in ("pi", "claude", "codex")},
             "first": min((u["start"] for u in units), default=now), "ranges": {}}
@@ -1480,6 +1536,9 @@ def build_level(con, cfg, level, now=None, units=None, only=None):
 
 def check(con, cfg):
     con.row_factory = sqlite3.Row
+    print("session log folders:")
+    for src, dirs in source_dirs(cfg).items():
+        print(f"  {src:6} " + (", ".join(dirs) if dirs else "(none found; set \"sources\" in config.json)"))
     print("sessions / turns by source:")
     for r in con.execute("SELECT source, COUNT(DISTINCT session) s, COUNT(*) n, SUM(busy)/3600.0 h, SUM(human) p, SUM(tokens_in+tokens_out+tokens_cache)/1e6 tok, SUM(cost) c FROM turns GROUP BY source"):
         print(f"  {r['source']:6} {r['s']:4} sessions {r['n']:5} turns  busy {r['h']:7.1f}h  prompts {r['p']:5}  tokens {r['tok']:8.1f}M  cost ${r['c']:.2f}")
