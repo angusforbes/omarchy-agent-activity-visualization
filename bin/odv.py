@@ -805,7 +805,7 @@ SYSTEM_PARTS = [   # (part, pattern over lower-cased paths + commands, weight)
     ("window manager", r"\.config/hypr|hyprctl|hyprland|hyprwrlds|hl\.dsp", 1.0),
     ("desktop shell", r"omarchy|quickshell|\bqs -p|waybar|/usr/share/omarchy|mako|walker", 1.0),
     ("agent tooling", r"\.pi/|\.claude|\.codex|hyprpi|herdr|/pi-[a-z]|/skills/|pi-jot|message board", 1.0),
-    ("hardware & drivers", r"pacman|\byay\b|modprobe|lsusb|lspci|v4l2|webcam|camera|bluetoothctl|pactl|wpctl|pipewire|alsa|/dev/|firmware|dkms|\\bgpu\\b", 1.0),
+    ("hardware & drivers", r"pacman|\byay\b|modprobe|lsusb|lspci|v4l2|webcam|camera|bluetoothctl|pactl|wpctl|pipewire|alsa|/dev/|firmware|dkms|\bgpu\b", 1.0),
     ("system services", r"systemctl|journalctl|coredumpctl|/etc/|udev|\bsudo\b", 1.0),
     ("apps & web", r"\.config/(?!hypr|omarchy|systemd)|brave|chromium|firefox|spotify|slack|whatsapp|xdg-open|flatpak|https?://", 0.8),
     ("notes", r"obsidian", 1.0),
