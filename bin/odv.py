@@ -20,6 +20,21 @@ _OLD_DATA = os.path.join(HOME, ".local/share/omarchy-data-visualization")   # pr
 if not os.path.exists(DATA) and os.path.isdir(_OLD_DATA):
     try: os.rename(_OLD_DATA, DATA)
     except OSError: pass
+
+# The data holds prompts, replies, file paths and commands: keep it private to the user.
+# Everything this process creates is owner-only (umask 077); an existing data dir from an older version is
+# tightened to 700 and its files to 600 on every run.
+os.umask(0o077)
+def _private_data():
+    try:
+        os.makedirs(DATA, mode=0o700, exist_ok=True)
+        os.chmod(DATA, 0o700)
+        for f in os.scandir(DATA):
+            if f.is_file(follow_symlinks=False): os.chmod(f.path, 0o600)
+            elif f.is_dir(follow_symlinks=False): os.chmod(f.path, 0o700)
+    except OSError as e:
+        print(f"odv: could not make {DATA} private: {e}", file=sys.stderr)
+_private_data()
 DB_PATH = os.path.join(DATA, "odv.db")
 SNAPSHOT = os.path.join(DATA, "snapshot.json")
 APPTIME = os.path.join(DATA, "apptime.jsonl")

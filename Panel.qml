@@ -252,7 +252,7 @@ Panel {
     if (appendProc.running || pendingLines.length === 0) return
     var payload = pendingLines.join("\n")
     pendingLines = []
-    appendProc.command = ["sh", "-c", "mkdir -p \"$1\" && printf '%s\\n' \"$2\" >> \"$1/apptime.jsonl\"", "sh", root.realDataDir, payload]
+    appendProc.command = ["sh", "-c", "umask 077; mkdir -p \"$1\" && printf '%s\\n' \"$2\" >> \"$1/apptime.jsonl\"", "sh", root.realDataDir, payload]
     appendProc.running = true
   }
   function sample() {

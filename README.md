@@ -93,6 +93,8 @@ rm -rf ~/.local/share/omarchy-agent-activity
 ```
 
 The plugin writes only to `~/.local/share/omarchy-agent-activity/`; removing that folder removes all its data.
+That data includes your prompts, replies, file paths and commands, so the folder is private to you: the
+collector creates it `700` with files `600` and tightens an existing folder on every run.
 
 ## How numbers are defined
 
