@@ -96,6 +96,9 @@ The plugin writes only to `~/.local/share/omarchy-agent-activity/`; removing tha
 That data includes your prompts, replies, file paths and commands, so the folder is private to you: the
 collector creates it `700` with files `600` and tightens an existing folder on every run. If the folder or anything in it
 is a symlink, belongs to another user, or cannot be made private, the collector stops before reading any logs.
+The panel reads its data files with a byte limit (snapshot 4 MB, slider frames 8 MB, read with `head -c`), and the
+collector keeps them under 2 MB and 6 MB (dropping the oldest slider windows first), so a large or replaced file
+cannot exhaust the shell's memory.
 
 ## How numbers are defined
 

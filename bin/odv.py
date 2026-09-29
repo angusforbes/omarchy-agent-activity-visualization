@@ -1276,12 +1276,24 @@ def leaf_name(topic, parent):
     rest = topic[len(parent):] if topic.lower().startswith(parent.lower()) else topic
     return rest.strip("-_ /.") or topic
 
+# Size caps for what the panel loads into the (long-lived) shell; the panel refuses anything larger than
+# 4 MB (snapshot) / 8 MB (frames) and reads at most that many bytes.
+SNAPSHOT_MAX = 2 * 1024 * 1024
+FRAMES_MAX = 6 * 1024 * 1024
+
+def _write_json(path, obj):
+    data = json.dumps(obj, separators=(",", ":"))
+    with open(path + ".tmp", "w") as f: f.write(data)
+    os.replace(path + ".tmp", path)
+    return len(data.encode())
+
 def build(con, cfg, now=None, out=SNAPSHOT):
     """Build both tag levels; top-level fields mirror the configured one, `levels` holds both for the panel's switch."""
     snap = build_level(con, cfg, "turn", now)     # rules only: the Data vis panel never uses Jev
-    tmp = out + ".tmp"
-    json.dump(snap, open(tmp, "w"), separators=(",", ":"))
-    os.replace(tmp, out)
+    size = len(json.dumps(snap, separators=(",", ":")).encode())
+    if size > SNAPSHOT_MAX:
+        sys.exit(f"odv: snapshot would be {size // 1024} KB (cap {SNAPSHOT_MAX // 1024} KB); not written")
+    _write_json(out, snap)
     return snap
 
 # Time-slider frames: the same range, ending `step` earlier each frame (frame 0 = now). 1y has none.
@@ -1306,8 +1318,12 @@ def build_frames(con, cfg, now=None):
         while i <= cap and (i == 0 or now - i * step > first + step):
             out.append(build_level(con, cfg, "turn", now - i * step, units=units, only=key)["ranges"][key]); i += 1
         path = os.path.join(DATA, f"frames-{key}.json")
-        json.dump({"generated": now, "step": step, "frames": out}, open(path + ".tmp", "w"), separators=(",", ":"))
-        os.replace(path + ".tmp", path)
+        # cap: drop the oldest windows until the file fits (the slider then reaches less far back)
+        sizes = [len(json.dumps(f, separators=(",", ":")).encode()) + 1 for f in out]
+        total = sum(sizes) + 100
+        while out and total > FRAMES_MAX:
+            total -= sizes.pop(); out.pop()
+        _write_json(path, {"generated": now, "step": step, "frames": out})
 
 _TP_CACHE = {}
 _SETUP_CACHE = {}

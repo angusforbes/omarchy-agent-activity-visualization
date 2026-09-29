@@ -136,14 +136,17 @@ Panel {
     if (root.back === 0) root.back = root.maxBack
     root.playing = true
   }
-  FileView {
+  // Data files are read through BoundedJson (below), never whole: at most `limit` bytes reach the shell.
+  readonly property int framesLimit: 8 * 1024 * 1024      // the collector caps frames at 6 MB
+  readonly property int snapLimit: 4 * 1024 * 1024        // … and the snapshot at 2 MB
+  property string dataError: ""
+  BoundedJson {
     id: framesFile
     path: root.dataDir + "/frames-" + root.range + ".json"
-    watchChanges: true
-    printErrors: false
-    onFileChanged: reload()
+    limit: root.framesLimit
     onPathChanged: { root.frames = null; reload() }
-    onLoaded: { try { var f = JSON.parse(text()); f._range = String(path).replace(/.*frames-(.*)\.json$/, "$1"); root.frames = f } catch (e) { } }
+    onParsed: function(f) { f._range = String(path).replace(/.*frames-(.*)\.json$/, "$1"); root.frames = f }
+    onRejected: function(why) { root.frames = null }
   }
   Process {
     id: framesProc
@@ -209,15 +212,14 @@ Panel {
   }
 
   // ---- snapshot ------------------------------------------------------------------------
-  FileView {
+  BoundedJson {
     id: snapFile
     path: root.dataDir + "/snapshot.json"
-    watchChanges: true
-    printErrors: false
-    onFileChanged: reload()
-    onLoaded: {
-      try { var first = !root.snap; root.snap = JSON.parse(text()); if (first) root.level = root.snap.level || "turn"; root.paintTick++ } catch (e) { /* keep last good snapshot */ }
-    }
+    limit: root.snapLimit
+    Component.onCompleted: reload()
+    onPathChanged: reload()
+    onParsed: function(o) { var first = !root.snap; root.snap = o; root.dataError = ""; if (first) root.level = root.snap.level || "turn"; root.paintTick++ }
+    onRejected: function(why) { root.dataError = why }
   }
   Process {
     id: runProc
@@ -275,6 +277,7 @@ Panel {
       if (root.opened) {
         root.paintTick++
         if (!root.snap) root.collect()     // only the very first time; afterwards refresh is by hand (↻ / R / right-click)
+        else snapFile.reload()             // pick up data written by a terminal run of the collector
       }
     }
   }
@@ -299,7 +302,7 @@ Panel {
     }
     function useData(dir: string): void { root.placedRange = ""; root.anchorEnd = 0; root.back = 0; root.dataOverride = dir; snapFile.reload(); framesFile.reload() }
     function useRealData(): void { root.placedRange = ""; root.anchorEnd = 0; root.back = 0; root.dataOverride = ""; snapFile.reload(); framesFile.reload() }
-    function debugState(): string { var R = root.view ? root.view.ranges[root.range] : null; return JSON.stringify({ range: root.range, back: root.back, maxBack: root.maxBack, anchorEnd: root.anchorEnd, placed: root.placedRange, t1: R ? new Date(R.t1 * 1000).toString() : null, live: root.live, label: root.endLabel() }) }
+    function debugState(): string { var R = root.view ? root.view.ranges[root.range] : null; return JSON.stringify({ range: root.range, back: root.back, maxBack: root.maxBack, anchorEnd: root.anchorEnd, placed: root.placedRange, t1: R ? new Date(R.t1 * 1000).toString() : null, live: root.live, label: root.endLabel(), dataDir: root.dataDir, dataError: root.dataError, frames: root.frames ? root.frames.frames.length : -1, framesPath: framesFile.path }) }
     function debugBack(i: int): void { root.setBack(i) }
     function debugSize(): string { return JSON.stringify({ col: column.implicitHeight, avail: root.contentAvail, fixed: root.fixedHeight, budget: root.chartBudget, w: panel.contentWidth, hdr: header.height, kpi: kpiRow.height, r1: row1.height, r2: row2.height, r3: row3.height, foot: footer.height, th: root.tileHead, t1: heatTile.height, h1: root.h1 }) }
     function setRange(r: string): void { if (root.ranges.indexOf(r) >= 0) root.range = r }
@@ -346,6 +349,31 @@ Panel {
   readonly property color dim: Qt.rgba(fg.r, fg.g, fg.b, 0.55)
   readonly property color rule: Qt.rgba(fg.r, fg.g, fg.b, 0.12)
   readonly property string ff: root.bar ? root.bar.fontFamily : "monospace"
+
+  // Reads a JSON file with a hard byte limit: `head -c limit+1` (so a huge or replaced file costs at most that much),
+  // rejects anything longer, then parses. Replaces FileView, which loads the whole file into the shell.
+  component BoundedJson: Item {
+    id: bj
+    property string path: ""
+    property int limit: 1024 * 1024
+    signal parsed(var obj)
+    signal rejected(string why)
+    function reload() { if (!path) return; if (bjProc.running) { bj.again = true; return } bjProc.running = true }
+    property bool again: false
+    Process {
+      id: bjProc
+      command: ["head", "-c", String(bj.limit + 1), "--", bj.path]
+      stdout: StdioCollector {
+        onStreamFinished: {
+          var t = text
+          if (!t) return
+          if (t.length > bj.limit) { bj.rejected(bj.path + " is larger than " + Math.round(bj.limit / 1048576) + " MB; not loaded"); return }
+          try { bj.parsed(JSON.parse(t)) } catch (e) { /* half-written or bad: keep the last good data */ }
+        }
+      }
+      onExited: if (bj.again) { bj.again = false; bj.reload() }
+    }
+  }
 
   component ChartCanvas: Canvas {
     id: cv
@@ -674,7 +702,7 @@ Panel {
             visible: !root.snap
             width: parent.width
             wrapMode: Text.WordWrap
-            text: root.collecting ? "Reading agent sessions for the first time…" : "No data yet. Right-click the bar icon (or press R) to collect."
+            text: root.collecting ? "Reading agent sessions for the first time…" : root.dataError !== "" ? root.dataError : "No data yet. Right-click the bar icon (or press R) to collect."
             color: root.dim; font.family: root.ff; font.pixelSize: Style.font.body
           }
           // no sessions found: say where we looked and how to point it elsewhere
