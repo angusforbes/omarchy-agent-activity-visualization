@@ -21,19 +21,48 @@ if not os.path.exists(DATA) and os.path.isdir(_OLD_DATA):
     try: os.rename(_OLD_DATA, DATA)
     except OSError: pass
 
-# The data holds prompts, replies, file paths and commands: keep it private to the user.
-# Everything this process creates is owner-only (umask 077); an existing data dir from an older version is
-# tightened to 700 and its files to 600 on every run.
+# The data holds prompts, replies, file paths and commands: it must be private to the user, and the collector
+# FAILS CLOSED: if the data folder or anything in it is a symlink, is not owned by this user, or cannot be made
+# owner-only (folder 700, files 600), it exits before reading any session log or writing anything.
+# Everything this process creates afterwards is owner-only as well (umask 077).
 os.umask(0o077)
+import stat as _stat
+
+def _refuse(why):
+    sys.exit(f"odv: not collecting: {why}. The data folder {DATA} must be a real folder owned by you and private "
+             f"(700, files 600). Fix it (or remove it; it is rebuilt from the logs) and run again.")
+
 def _private_data():
+    uid = os.getuid()
+    parent = os.path.dirname(DATA)
     try:
-        os.makedirs(DATA, mode=0o700, exist_ok=True)
-        os.chmod(DATA, 0o700)
-        for f in os.scandir(DATA):
-            if f.is_file(follow_symlinks=False): os.chmod(f.path, 0o600)
-            elif f.is_dir(follow_symlinks=False): os.chmod(f.path, 0o700)
+        os.makedirs(parent, exist_ok=True)
+        try:
+            os.mkdir(DATA, 0o700)
+        except FileExistsError:
+            pass
+        st = os.lstat(DATA)
     except OSError as e:
-        print(f"odv: could not make {DATA} private: {e}", file=sys.stderr)
+        _refuse(f"cannot create {DATA} ({e})")
+    if _stat.S_ISLNK(st.st_mode): _refuse(f"{DATA} is a symlink")
+    if not _stat.S_ISDIR(st.st_mode): _refuse(f"{DATA} is not a folder")
+    if st.st_uid != uid: _refuse(f"{DATA} is owned by another user")
+    try:
+        os.chmod(DATA, 0o700)
+    except OSError as e:
+        _refuse(f"cannot make {DATA} private ({e})")
+    if os.lstat(DATA).st_mode & 0o077: _refuse(f"{DATA} is still readable by others")
+    for f in os.scandir(DATA):
+        st = os.lstat(f.path)
+        if _stat.S_ISLNK(st.st_mode): _refuse(f"{f.path} is a symlink")
+        if st.st_uid != uid: _refuse(f"{f.path} is owned by another user")
+        want = 0o700 if _stat.S_ISDIR(st.st_mode) else 0o600
+        try:
+            if _stat.S_IMODE(st.st_mode) != want: os.chmod(f.path, want)   # not a symlink (checked above), and the folder is already private
+        except (OSError, NotImplementedError) as e:
+            _refuse(f"cannot make {f.path} private ({e})")
+        if os.lstat(f.path).st_mode & 0o077: _refuse(f"{f.path} is still readable by others")
+
 _private_data()
 DB_PATH = os.path.join(DATA, "odv.db")
 SNAPSHOT = os.path.join(DATA, "snapshot.json")
