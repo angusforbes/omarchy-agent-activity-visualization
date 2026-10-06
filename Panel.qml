@@ -8,7 +8,7 @@ import "charts.js" as Charts
 
 // agf.agent-activity — "Agent Activity" bar button + large dashboard panel.
 //
-// Data: bin/odv.py (the collector, shipped next to this file) parses Pi / Claude Code / Codex
+// Data: bin/odv.py (the collector, shipped next to this file) parses Pi / Claude Code / Codex / OpenCode
 // session logs into ~/.local/share/omarchy-agent-activity/odv.db and writes snapshot.json,
 // which this panel watches. It runs only when you ask (↻, R, right-click the bar icon); the time slider's
 // windows (frames-<range>.json) are built in the background afterwards.
@@ -183,7 +183,8 @@ Panel {
              tk(["yellow", "color3"], Color.accent), tk(["cyan", "color6"], Color.accent), tk(["orange", "bright_yellow", "color11"], Color.accent),
              tk(["red", "color1"], Color.urgent), tk(["dark_foreground", "color8"], Color.muted), tk(["brown", "bright_red", "color9"], Color.urgent)],
     kinds: { "Pi": String(root.bar ? root.bar.foreground : Color.foreground), "Claude Code": tk(["orange", "yellow", "color3"], Color.accent),
-             "Codex": tk(["green", "color2"], Color.accent), "Subagents": tk(["magenta", "color5"], Color.accent) },
+             "Codex": tk(["green", "color2"], Color.accent), "OpenCode": tk(["blue", "color4"], Color.accent),
+             "Subagents": tk(["magenta", "color5"], Color.accent) },
     font: root.bar ? root.bar.fontFamily : "monospace",
     scale: Style.space(100) / 100
   })
@@ -708,12 +709,12 @@ Panel {
           // no sessions found: say where we looked and how to point it elsewhere
           Text {
             readonly property var c: root.snap ? root.snap.counts : null
-            visible: !!c && (c.pi + c.claude + c.codex) === 0 && root.dataOverride === ""
+            visible: !!c && (c.pi + c.claude + c.codex + (c.opencode || 0)) === 0 && root.dataOverride === ""
             width: parent.width
             wrapMode: Text.WordWrap
             text: {
               if (!root.snap) return ""
-              var src = root.snap.sources || {}, names = { pi: "Pi", claude: "Claude Code", codex: "Codex" }, parts = []
+              var src = root.snap.sources || {}, names = { pi: "Pi", claude: "Claude Code", codex: "Codex", opencode: "OpenCode" }, parts = []
               for (var k in names) parts.push(names[k] + ": " + ((src[k] && src[k].length) ? src[k].join(", ") : "no folder found"))
               return "No agent sessions found (" + parts.join(" · ") + "). If your logs live elsewhere, list their folders under \"sources\" in ~/.local/share/omarchy-agent-activity/config.json, then press R."
             }
@@ -817,7 +818,7 @@ Panel {
             Text {
               id: footR
               anchors.right: parent.right
-              text: root.snap ? "Pi " + root.snap.counts.pi + " · Claude Code " + root.snap.counts.claude + " · Codex " + root.snap.counts.codex + " sessions · data from " + Qt.formatDateTime(new Date(root.snap.generated * 1000), "ddd h:mm AP") : ""
+              text: root.snap ? "Pi " + root.snap.counts.pi + " · Claude Code " + root.snap.counts.claude + " · Codex " + root.snap.counts.codex + ((root.snap.counts.opencode || 0) ? " · OpenCode " + root.snap.counts.opencode : "") + " sessions · data from " + Qt.formatDateTime(new Date(root.snap.generated * 1000), "ddd h:mm AP") : ""
               color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
             }
           }

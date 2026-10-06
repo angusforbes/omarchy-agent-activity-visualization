@@ -1,8 +1,8 @@
 # Agent Activity for Omarchy
 
 A top-bar widget for [Omarchy](https://omarchy.org) (plugin id `agf.agent-activity`, glyph 󰄧) that opens a
-large dashboard of what your coding agents worked on: [Pi](https://github.com/badlogic/pi-mono), Claude Code
-and Codex. Everything is computed locally from the agents' session logs; nothing is sent anywhere.
+large dashboard of what your coding agents worked on: [Pi](https://github.com/badlogic/pi-mono), Claude Code,
+Codex and [OpenCode](https://opencode.ai). Everything is computed locally from the agents' session logs; nothing is sent anywhere.
 
 ![Agent Activity, last 7 days](preview.png)
 
@@ -22,7 +22,7 @@ any range back through your history. The Sankey can be scaled to the window or t
 - Omarchy with the Quattro shell (Quickshell).
 - `python3` (standard library only) for the collector in `bin/odv.py`.
 - Session logs from at least one of: Pi (`~/.pi/agent/sessions/`), Claude Code (`~/.claude/projects/`),
-  Codex (`~/.codex/sessions/`). They are only read, never changed.
+  Codex (`~/.codex/sessions/`), OpenCode (`~/.local/share/opencode/`). They are only read, never changed.
 
 ## Install
 
@@ -57,6 +57,7 @@ The collector reads each agent's session logs where that agent keeps them, honou
 | Pi | `~/.pi/agent/sessions/` | `PI_CODING_AGENT_SESSION_DIR`, Pi's `sessionDir` setting, `PI_CODING_AGENT_DIR` |
 | Claude Code | `~/.claude/projects/` (or `~/.config/claude/projects/`) | `CLAUDE_CONFIG_DIR` |
 | Codex | `~/.codex/sessions/` | `CODEX_HOME` |
+| OpenCode | `~/.local/share/opencode/` (`opencode.db`, or the older `storage/` JSON tree) | `OPENCODE_DATA_DIR`, `XDG_DATA_HOME` |
 
 Environment variables are read from the shell's environment (set them for your session, not only in a
 terminal), so if your logs live elsewhere, the reliable way is `sources` in `config.json` (below). The
@@ -74,7 +75,7 @@ Data and settings live in `~/.local/share/omarchy-agent-activity/`: `odv.db` (SQ
   collector only reads history it needs (twice that span, for the "vs previous" comparison), so a longer
   range means a slower refresh on a large history.
 - `sources`: session log folders per agent, replacing the defaults above, e.g.
-  `"sources": {"claude": ["~/work-machine/.claude/projects"], "codex": ["/data/codex/sessions"]}`.
+  `"sources": {"claude": ["~/work-machine/.claude/projects"], "codex": ["/data/codex/sessions"], "opencode": ["~/path/to/opencode"]}`.
 - `projectRoots`: folders whose sub-folders are your projects (default `~/Work`, `~/code`, `~/projects`,
   `~/src`, `~/dev`, `~/Developer`, `~/repos`, `~/git`, …). A project is named after its folder there;
   otherwise after the session folder's top-level folder under your home.
@@ -106,7 +107,7 @@ cannot exhaust the shell's memory.
 - **Agent busy**: time inside turns, with gaps over 10 min cut out. Parallel agents add up.
 - **Your time**: for each prompt you typed, the time since the agent's last reply (at most 3 min),
   unioned across sessions. Prompts relayed from other agents and subagent sessions are not counted as yours.
-- **Tokens / cost**: from each log's usage fields. Pi records cost; Claude Code and Codex costs are
+- **Tokens / cost**: from each log's usage fields. Pi and OpenCode record cost; Claude Code and Codex costs are
   estimated from `prices` in `config.json` (shown as "COST (EST.)").
 - **Duplicates**: forked Pi sessions copy their parent's history; copied entries are counted once.
 - **Work kind**: from each turn's tool calls: editing, running commands, reading, web, delegating, talking.
@@ -120,6 +121,7 @@ cannot exhaust the shell's memory.
   (`subagents:record`: type, description, status, start/end).
 - **Pane subagents** (`subagent` tool): `subagent_result` messages give name, status and duration.
 - **Claude Code**: `Agent`/`Task` tool calls and `subagents/*.jsonl` sessions.
+- **OpenCode**: `task` tool calls, and child sessions (a session with a parent) as subagent sessions.
 - Codex logs contain no subagents. The Sankey shows subagent tokens as their own "Subagents" agent.
 
 ## Optional: AI tagging with Jev

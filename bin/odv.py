@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """odv — collector for the Agent Activity Omarchy plugin (agf.agent-activity).
 
-    odv ingest            parse Pi / Claude Code / Codex logs + app-time samples into SQLite
+    odv ingest            parse Pi / Claude Code / Codex / OpenCode logs + app-time samples into SQLite
     odv tag [--jev]       tag turns (rules; Jev when a TypeSafe key is configured)
     odv build             write snapshot.json for the bar panel
     odv run               ingest + tag + build   (what the systemd timer runs)
@@ -499,6 +499,119 @@ def parse_codex(path):
                                      tout=u.get("output_tokens") or 0, tcache=cached, model=model))
     return sid, cwd, False, entries, {"subtype": "", "subid": "", "runs": []}
 
+# OpenCode (opencode.ai). Newer versions keep everything in one SQLite file (<data>/opencode.db: tables
+# session, message, part, each with a JSON `data` column); older ones a JSON tree (<data>/storage/session/
+# <project>/<ses>.json, storage/message/<ses>/<msg>.json, storage/part/<msg>/<part>.json). A session is
+# addressed as "<db>#<session id>" or by its session JSON file, so the rest of the pipeline can treat each
+# session like one log file. Only read, never changed (the database is opened read-only).
+def _oc_ro(db):
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+    con.execute("PRAGMA query_only=1")
+    return con
+
+def _oc_sessions(d):
+    """[(path, signature)] for one OpenCode data folder."""
+    out = []
+    db = os.path.join(d, "opencode.db")
+    if os.path.isfile(db):
+        try:
+            con = _oc_ro(db)
+            for sid, upd, n in con.execute("SELECT s.id, s.time_updated, (SELECT COUNT(*) FROM part p WHERE p.session_id = s.id) FROM session s"):
+                out.append((f"{db}#{sid}", (int(n or 0), (upd or 0) / 1000)))
+            con.close()
+        except sqlite3.Error as e:
+            print(f"odv: opencode db {db}: {e}", file=sys.stderr)
+    for f in glob.glob(os.path.join(d, "storage", "session", "**", "*.json"), recursive=True):
+        sid = os.path.splitext(os.path.basename(f))[0]
+        md = os.path.join(d, "storage", "message", sid)
+        try:
+            mt = max([os.path.getmtime(f)] + [os.path.getmtime(x) for x in glob.glob(os.path.join(md, "*.json"))])
+            out.append((f, (len(os.listdir(md)) if os.path.isdir(md) else 0, mt)))
+        except OSError:
+            pass
+    return out
+
+def _oc_load(path):
+    """(session dict, [message dicts with "_parts"]) from either storage layout."""
+    if "#" in path and path.split("#", 1)[0].endswith(".db"):
+        db, sid = path.split("#", 1)
+        con = _oc_ro(db)
+        cols = [r[1] for r in con.execute("PRAGMA table_info(session)")]
+        row = con.execute("SELECT * FROM session WHERE id=?", (sid,)).fetchone()
+        ses = dict(zip(cols, row)) if row else {"id": sid}
+        msgs, by = [], {}
+        for mid, tc, data in con.execute("SELECT id, time_created, data FROM message WHERE session_id=? ORDER BY time_created, id", (sid,)):
+            m = json.loads(data); m["id"] = mid; m.setdefault("time", {}).setdefault("created", tc); m["_parts"] = []
+            msgs.append(m); by[mid] = m
+        for mid, tc, data in con.execute("SELECT message_id, time_created, data FROM part WHERE session_id=? ORDER BY time_created, id", (sid,)):
+            if mid in by:
+                pt = json.loads(data); pt.setdefault("_t", tc); by[mid]["_parts"].append(pt)
+        con.close()
+        return ses, msgs
+    ses = json.load(open(path))
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(path))))   # <data>/storage
+    sid = ses.get("id") or os.path.splitext(os.path.basename(path))[0]
+    msgs = []
+    for f in glob.glob(os.path.join(root, "message", sid, "*.json")):
+        try: m = json.load(open(f))
+        except Exception: continue
+        m["_parts"] = []
+        for pf in sorted(glob.glob(os.path.join(root, "part", m.get("id", ""), "*.json"))):
+            try: m["_parts"].append(json.load(open(pf)))
+            except Exception: pass
+        msgs.append(m)
+    msgs.sort(key=lambda m: ((m.get("time") or {}).get("created") or 0, m.get("id", "")))
+    return ses, msgs
+
+def parse_opencode(path):
+    ses, msgs = _oc_load(path)
+    sid = ses.get("id") or path
+    cwd = ses.get("directory") or ""
+    sub = bool(ses.get("parent_id") or ses.get("parentID"))
+    meta = {"subtype": (ses.get("agent") or "subagent") if sub else "", "subid": "", "runs": [], "commands": []}
+    entries = []
+    for m in msgs:
+        ts = ((m.get("time") or {}).get("created") or 0) / 1000
+        if not ts:
+            continue
+        key = "oc:" + str(m.get("id") or ts)
+        parts = m.get("_parts") or []
+        if m.get("role") == "user":
+            text = " ".join(p.get("text", "") for p in parts if p.get("type") == "text" and not p.get("synthetic"))
+            if text:
+                entries.append(Entry(ts, "user", key, text=text))
+                sl = slash_of(text)
+                if sl: meta["commands"].append((ts, sl, "typed"))
+        elif m.get("role") == "assistant":
+            tools, files, text, calls, ends = [], [], "", [], []
+            for p in parts:
+                if p.get("type") == "tool":
+                    name, st = p.get("tool", ""), p.get("state") or {}
+                    inp = st.get("input") or {}
+                    tools.append(name); files += tool_files(inp); calls.append(call_of(name, inp))
+                    end = (st.get("time") or {}).get("end")
+                    if end: ends.append(end / 1000)
+                    if name == "task":
+                        meta["runs"].append(dict(key="oc:" + (p.get("callID") or p.get("id") or str(ts)), kind="agent",
+                                                 type=inp.get("subagent_type") or "general", description=(inp.get("description") or "")[:200],
+                                                 status=st.get("status") or "", start=((st.get("time") or {}).get("start") or ts * 1000) / 1000,
+                                                 end=end / 1000 if end else None))
+                elif p.get("type") == "text" and not text:
+                    text = p.get("text", "")
+            tk = m.get("tokens") or {}
+            cache = tk.get("cache") or {}
+            cost = m.get("cost")
+            entries.append(Entry(ts, "assistant", key, text=text, tools=tools, files=files, calls=calls,
+                                 tin=tk.get("input") or 0, tout=(tk.get("output") or 0) + (tk.get("reasoning") or 0),
+                                 tcache=(cache.get("read") or 0) + (cache.get("write") or 0),
+                                 cost=cost if isinstance(cost, (int, float)) else None, model=m.get("modelID") or ""))
+            for i, e in enumerate(ends):
+                entries.append(Entry(e, "tool", f"{key}:t{i}"))
+            done = ((m.get("time") or {}).get("completed") or 0) / 1000
+            if done > ts and not ends:
+                entries.append(Entry(done, "tool", f"{key}:done"))
+    return sid, cwd, sub, entries, meta
+
 def _expand(p):
     return os.path.realpath(os.path.expanduser(os.path.expandvars(p)))
 
@@ -508,7 +621,8 @@ def source_dirs(cfg=None):
     config.json "sources" ({"pi": [...], "claude": [...], "codex": [...]}) replaces the defaults for a source.
     Otherwise each tool's own settings are honoured: Pi PI_CODING_AGENT_SESSION_DIR, the sessionDir setting,
     PI_CODING_AGENT_DIR (default ~/.pi/agent); Claude Code CLAUDE_CONFIG_DIR (default ~/.claude, also
-    ~/.config/claude); Codex CODEX_HOME (default ~/.codex)."""
+    ~/.config/claude); Codex CODEX_HOME (default ~/.codex); OpenCode OPENCODE_DATA_DIR, else
+    $XDG_DATA_HOME/opencode (default ~/.local/share/opencode)."""
     over = (cfg or {}).get("sources") or {}
     env = os.environ.get
     pi_agent = env("PI_CODING_AGENT_DIR") or os.path.join(HOME, ".pi/agent")
@@ -522,6 +636,7 @@ def source_dirs(cfg=None):
         "pi": pi,
         "claude": [os.path.join(d, "projects") for d in (env("CLAUDE_CONFIG_DIR"), os.path.join(HOME, ".claude"), os.path.join(HOME, ".config/claude")) if d],
         "codex": [os.path.join(d, "sessions") for d in (env("CODEX_HOME"), os.path.join(HOME, ".codex")) if d],
+        "opencode": [d for d in (env("OPENCODE_DATA_DIR"), os.path.join(env("XDG_DATA_HOME") or os.path.join(HOME, ".local/share"), "opencode")) if d],
     }
     out = {}
     for src, dflt in defaults.items():
@@ -534,12 +649,24 @@ def source_dirs(cfg=None):
     return out
 
 def source_files(src, cfg=None):
+    if src == "opencode":
+        return sorted({p for d in source_dirs(cfg)[src] for p, _ in _oc_sessions(d)})
     files = []
     for d in source_dirs(cfg)[src]:
         files += glob.glob(os.path.join(d, "**", "*.jsonl"), recursive=True)
     return sorted(set(files))
 
-SOURCES = {"pi": parse_pi, "claude": parse_claude, "codex": parse_codex}
+SOURCES = {"pi": parse_pi, "claude": parse_claude, "codex": parse_codex, "opencode": parse_opencode}
+
+def file_sig(source, path, cfg=None, _cache={}):
+    """(size, mtime) that changes when a log changes; OpenCode sessions inside a database get their own."""
+    if source == "opencode":
+        if "oc" not in _cache:
+            _cache["oc"] = {p: sig for d in source_dirs(cfg)[source] for p, sig in _oc_sessions(d)}
+        if path in _cache["oc"]:
+            return _cache["oc"][path]
+    st = os.stat(path)
+    return st.st_size, st.st_mtime
 
 # ─────────────────────────── turns ───────────────────────────
 
@@ -604,10 +731,10 @@ def ingest(con, cfg, verbose=False):
     changed = 0
     for source, parser in SOURCES.items():
         # creation order, so an original session owns history that forks/twins later copy
-        paths = sorted(source_files(source, cfg), key=lambda p: os.path.basename(p) if source == "pi" else os.path.getmtime(p))
+        paths = sorted(source_files(source, cfg), key=lambda p: os.path.basename(p) if source == "pi" else file_sig(source, p, cfg)[1])
         for path in paths:
-            st = os.stat(path)
-            if known.get(path) == (st.st_size, st.st_mtime) or st.st_mtime < h0:   # unchanged, or older than maxRange needs
+            size, mtime = file_sig(source, path, cfg)
+            if known.get(path) == (size, mtime) or mtime < h0:   # unchanged, or older than maxRange needs
                 continue
             try:
                 sid, cwd, sub, entries, meta = parser(path)
@@ -646,7 +773,7 @@ def ingest(con, cfg, verbose=False):
             if turns:
                 con.executemany(f"INSERT OR REPLACE INTO turns({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
                                 [tuple(t[c] for c in cols) for t in turns])
-            con.execute("INSERT OR REPLACE INTO files VALUES(?,?,?,?)", (path, st.st_size, st.st_mtime, source))
+            con.execute("INSERT OR REPLACE INTO files VALUES(?,?,?,?)", (path, size, mtime, source))
             changed += 1
             if verbose:
                 print(f"  {source:6} {len(turns):4} turns  {path}")
@@ -666,6 +793,8 @@ def term_kind(app, title):
         return "Claude Code"
     if "codex" in t:
         return "Codex"
+    if "opencode" in t:
+        return "OpenCode"
     return "shell"
 
 def ingest_apps(con):
@@ -1165,7 +1294,7 @@ def short_model(model):
     m = re.sub(r"-\d{8}$", "", m)
     return m or "unknown"
 
-KINDS = {"pi": "Pi", "claude": "Claude Code", "codex": "Codex", "sub": "Subagents"}
+KINDS = {"pi": "Pi", "claude": "Claude Code", "codex": "Codex", "opencode": "OpenCode", "sub": "Subagents"}
 
 def clip_segs(segs, a, b):
     out = []
@@ -1337,7 +1466,7 @@ def build_level(con, cfg, level, now=None, units=None, only=None):
     now_h = (int(now) // 3600 + 1) * 3600          # end of the current hour
     themes_all = list(cfg["themes"].keys()) + ["Other"]
     acts = WORK
-    kinds = ["pi", "claude", "codex", "sub"]
+    kinds = ["pi", "claude", "codex", "opencode", "sub"]
     # theme order: by all-time busy, so colours are stable across ranges
     # range-independent setup, cached across the many build_level calls of `odv frames`
     ck = (id(units), len(units), level, sum(u["tokens"] for u in units))
@@ -1370,7 +1499,7 @@ def build_level(con, cfg, level, now=None, units=None, only=None):
 
     snap = {"generated": now, "rangeOrder": ranges_for(cfg), "sources": {k: [d.replace(HOME, "~", 1) for d in v] for k, v in source_dirs(cfg).items()}, "level": level, "themes": themes, "activities": acts, "kinds": [KINDS[k] for k in kinds],
             "jev": False, "tagging": "rules",
-            "counts": {k: con.execute("SELECT COUNT(DISTINCT session) FROM turns WHERE source=? AND sub=0", (k,)).fetchone()[0] for k in ("pi", "claude", "codex")},
+            "counts": {k: con.execute("SELECT COUNT(DISTINCT session) FROM turns WHERE source=? AND sub=0", (k,)).fetchone()[0] for k in ("pi", "claude", "codex", "opencode")},
             "first": min((u["start"] for u in units), default=now), "ranges": {}}
 
     for key, (hours, nb, nmix, label) in RANGES.items():
@@ -1574,7 +1703,7 @@ def build_level(con, cfg, level, now=None, units=None, only=None):
             if t0 <= ts < t1:
                 if kind: term[kind] += dur
                 else: at[app] += dur
-        R["apps"] = {"terminal": sum(term.values()), "split": [{"name": k, "s": term[k]} for k in ("Pi", "Claude Code", "Codex", "shell") if term[k]],
+        R["apps"] = {"terminal": sum(term.values()), "split": [{"name": k, "s": term[k]} for k in ("Pi", "Claude Code", "Codex", "OpenCode", "shell") if term[k]],
                      "apps": [{"name": a, "s": s} for a, s in at.most_common(6)], "other": sum(s for a, s in at.most_common()[6:])}
         # ── subagents: per type (runs + outcomes from run records, busy/tokens/cost from child sessions) ──
         st = {}

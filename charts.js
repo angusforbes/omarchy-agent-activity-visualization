@@ -508,7 +508,7 @@ function apps(ctx, w, h, snap, key, P) {
     hits.push({ x: 0, y: y - 12, w: w, h: 17, text: name + "\n" + fmtH(s) + " focused" });
     y += K(P, small ? 16 : 21);
   }
-  var kc = { "Pi": P.kinds["Pi"], "Claude Code": P.kinds["Claude Code"], "Codex": P.kinds["Codex"], "shell": rgba(P.fg, 0.3) };
+  var kc = { "Pi": P.kinds["Pi"], "Claude Code": P.kinds["Claude Code"], "Codex": P.kinds["Codex"], "OpenCode": P.kinds["OpenCode"], "shell": rgba(P.fg, 0.3) };
   if (A.terminal > 0) {
     row("terminals", A.terminal, A.split.map(function (s) { return [s.s, kc[s.name] || rgba(P.fg, 0.4)]; }), false);
     A.split.forEach(function (s) { row(s.name, s.s, [[s.s, rgba(kc[s.name].charAt(0) === "#" ? kc[s.name] : P.fg, 0.75)]], true); });
