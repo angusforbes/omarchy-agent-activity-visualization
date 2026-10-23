@@ -499,8 +499,9 @@ def parse_codex(path):
                                      tout=u.get("output_tokens") or 0, tcache=cached, model=model))
     return sid, cwd, False, entries, {"subtype": "", "subid": "", "runs": []}
 
-# OpenCode (opencode.ai). Newer versions keep everything in one SQLite file (<data>/opencode.db: tables
-# session, message, part, each with a JSON `data` column); older ones a JSON tree (<data>/storage/session/
+# OpenCode (opencode.ai). Newer versions keep everything in one SQLite file (<data>/opencode.db). Current
+# versions (OpenCode 1.1+/2.x) use session_v2 + session_message, one JSON `data` row per message; earlier ones
+# use session, message, part, each with a JSON `data` column; the oldest a JSON tree (<data>/storage/session/
 # <project>/<ses>.json, storage/message/<ses>/<msg>.json, storage/part/<msg>/<part>.json). A session is
 # addressed as "<db>#<session id>" or by its session JSON file, so the rest of the pipeline can treat each
 # session like one log file. Only read, never changed (the database is opened read-only).
@@ -509,6 +510,9 @@ def _oc_ro(db):
     con.execute("PRAGMA query_only=1")
     return con
 
+def _oc_tables(con):
+    return {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
 def _oc_sessions(d):
     """[(path, signature)] for one OpenCode data folder."""
     out = []
@@ -516,8 +520,12 @@ def _oc_sessions(d):
     if os.path.isfile(db):
         try:
             con = _oc_ro(db)
-            for sid, upd, n in con.execute("SELECT s.id, s.time_updated, (SELECT COUNT(*) FROM part p WHERE p.session_id = s.id) FROM session s"):
-                out.append((f"{db}#{sid}", (int(n or 0), (upd or 0) / 1000)))
+            if "session_v2" in _oc_tables(con):     # OpenCode 1.1+/2.x: one row per message, JSON `data`
+                for sid, upd, n in con.execute("SELECT s.id, s.time_updated, (SELECT COUNT(*) FROM session_message m WHERE m.session_id = s.id) FROM session_v2 s"):
+                    out.append((f"{db}#{sid}", (int(n or 0), (upd or 0) / 1000)))
+            else:
+                for sid, upd, n in con.execute("SELECT s.id, s.time_updated, (SELECT COUNT(*) FROM part p WHERE p.session_id = s.id) FROM session s"):
+                    out.append((f"{db}#{sid}", (int(n or 0), (upd or 0) / 1000)))
             con.close()
         except sqlite3.Error as e:
             print(f"odv: opencode db {db}: {e}", file=sys.stderr)
@@ -531,11 +539,52 @@ def _oc_sessions(d):
             pass
     return out
 
+def _oc_v2_load(con, sid):
+    """(session dict, [message dicts with "_parts"]) from the OpenCode 1.1+/2.x schema
+    (session_v2, session_message). Parts live inside each message's JSON `data`; they are
+    translated into the older part shape that parse_opencode already understands."""
+    cols = [r[1] for r in con.execute("PRAGMA table_info(session_v2)")]
+    row = con.execute("SELECT * FROM session_v2 WHERE id=?", (sid,)).fetchone()
+    ses = dict(zip(cols, row)) if row else {"id": sid}
+    msgs = []
+    for typ, tc, data in con.execute("SELECT type, time_created, data FROM session_message WHERE session_id=? ORDER BY seq, time_created", (sid,)):
+        if typ not in ("user", "assistant"):
+            continue
+        try:
+            m = json.loads(data)
+        except Exception:
+            continue
+        m.setdefault("time", {}).setdefault("created", tc)
+        m["_parts"] = []
+        if typ == "user":
+            m["role"] = "user"
+            m["_parts"].append({"type": "text", "text": m.get("text") or ""})
+        else:
+            m["role"] = "assistant"
+            model = m.get("model") or {}
+            m["modelID"] = model.get("id") or model.get("modelID") or model.get("model") or ""
+            for p in m.get("content") or []:
+                pt = p.get("type")
+                if pt == "text":
+                    m["_parts"].append({"type": "text", "text": p.get("text") or ""})
+                elif pt == "tool":
+                    t, st = p.get("time") or {}, p.get("state") or {}
+                    m["_parts"].append({"type": "tool", "tool": p.get("name") or "", "callID": p.get("id") or "",
+                                        "state": {"status": st.get("status") or "", "input": st.get("input") or {},
+                                                  "time": {"start": t.get("created") or t.get("ran"),
+                                                           "end": t.get("completed")}}})
+        msgs.append(m)
+    return ses, msgs
+
 def _oc_load(path):
     """(session dict, [message dicts with "_parts"]) from either storage layout."""
     if "#" in path and path.split("#", 1)[0].endswith(".db"):
         db, sid = path.split("#", 1)
         con = _oc_ro(db)
+        if "session_v2" in _oc_tables(con):
+            ses, msgs = _oc_v2_load(con, sid)
+            con.close()
+            return ses, msgs
         cols = [r[1] for r in con.execute("PRAGMA table_info(session)")]
         row = con.execute("SELECT * FROM session WHERE id=?", (sid,)).fetchone()
         ses = dict(zip(cols, row)) if row else {"id": sid}
